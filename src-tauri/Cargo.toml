@@ -1,0 +1,36 @@
+[package]
+name = "service-panel"
+version = "0.1.0"
+description = "本地服务管理面板"
+authors = ["you"]
+edition = "2021"
+rust-version = "1.77"
+
+# 关键库放 lib，便于单元测试；main.rs 只做薄封装
+[lib]
+name = "service_panel_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+sysinfo = "0.30"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "1"
+encoding_rs = "0.8"
+base64 = "0.22"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

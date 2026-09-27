@@ -1,0 +1,15 @@
+# 依赖
+node_modules
+# 构建产物
+dist
+# Tauri 目标目录
+src-tauri/target
+# 运行时数据（SQLite、日志）
+*.db
+*.db-*
+logs/
+# 编辑器 / OS
+.DS_Store
+.idea
+.vscode
+*.log
