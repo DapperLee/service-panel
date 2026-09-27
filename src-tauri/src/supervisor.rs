@@ -13,16 +13,13 @@ fn now_ms() -> i64 {
 }
 
 /// 启动后台监督线程
-pub fn spawn_supervisor(state: Arc<AppState>, autostart_rx: std::sync::mpsc::Receiver<()>) {
+pub fn spawn_supervisor(state: Arc<AppState>) {
     thread::spawn(move || {
         // 面板启动后先做一次“接管式”初始化 + 自启
         takeover_and_autostart(&state);
 
         let mut sys = System::new_all();
         loop {
-            // 非阻塞消费自启信号（已在启动时处理，这里主要为后续扩展留口）
-            while autostart_rx.try_recv().is_ok() {}
-
             sys.refresh_processes();
             tick(&state, &sys);
             thread::sleep(Duration::from_secs(2));
@@ -142,12 +139,14 @@ fn tick(state: &Arc<AppState>, sys: &System) {
                     }
                 }
                 if let Some(code) = exited {
+                    let prev = rt.state;
                     rt.live = None; // drop 触发 Job 回收
                     if rt.desired == Desired::Running {
                         rt.state = State::Crashed;
                         rt.last_error = Some(format!("进程意外退出 code={code}"));
                         events.push(StateEvent {
                             id: id.clone(),
+                            from: Some(prev),
                             state: State::Crashed,
                             pid: None,
                             error: rt.last_error.clone(),
@@ -157,6 +156,7 @@ fn tick(state: &Arc<AppState>, sys: &System) {
                         rt.state = State::Stopped;
                         events.push(StateEvent {
                             id: id.clone(),
+                            from: Some(prev),
                             state: State::Stopped,
                             pid: None,
                             error: None,
@@ -238,9 +238,11 @@ fn tick(state: &Arc<AppState>, sys: &System) {
                 && rt.spec.driver != DriverKind::Command
                 && matches!(ext_map.get(id), Some(Some(false)))
             {
+                let prev = rt.state;
                 rt.state = State::Crashed;
                 events.push(StateEvent {
                     id: id.clone(),
+                    from: Some(prev),
                     state: State::Crashed,
                     pid: None,
                     error: Some("外部服务未在运行".to_string()),
@@ -259,9 +261,11 @@ fn tick(state: &Arc<AppState>, sys: &System) {
                         Err(_) => {
                             rt.unhealthy_streak += 1;
                             if rt.unhealthy_streak >= threshold {
+                                let prev = rt.state;
                                 rt.state = State::Unhealthy;
                                 events.push(StateEvent {
                                     id: id.clone(),
+                                    from: Some(prev),
                                     state: State::Unhealthy,
                                     pid: rt.live.as_ref().map(|l| l.pid),
                                     error: Some("健康检查连续失败".to_string()),

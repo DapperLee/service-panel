@@ -7,9 +7,11 @@ use std::time::{Duration, Instant};
 
 fn set_state(state: &Arc<AppState>, id: &str, new: State, err: Option<String>) {
     let mut pid = None;
+    let mut from = None;
     {
         let mut rts = state.runtimes.lock().unwrap();
         if let Some(rt) = rts.get_mut(id) {
+            from = Some(rt.state);
             rt.state = new;
             rt.last_error = err.clone();
             if let Some(live) = &rt.live {
@@ -19,6 +21,7 @@ fn set_state(state: &Arc<AppState>, id: &str, new: State, err: Option<String>) {
     }
     state.push_state(StateEvent {
         id: id.to_string(),
+        from,
         state: new,
         pid,
         error: err,

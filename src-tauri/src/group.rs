@@ -313,3 +313,65 @@ pub fn stop_all_seq(app: &AppHandle, state: Arc<AppState>) -> Result<(), String>
     std::thread::spawn(move || run_stop(&app2, &state, &ordered, "全部"));
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::topo_order;
+    use crate::types::ServiceSpec;
+    use std::collections::HashMap;
+
+    fn spec_with_after(after: &[&str]) -> ServiceSpec {
+        let mut s = ServiceSpec::default();
+        s.after = after.iter().map(|x| x.to_string()).collect();
+        s
+    }
+
+    fn map(pairs: &[(&str, ServiceSpec)]) -> HashMap<String, ServiceSpec> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+    }
+
+    #[test]
+    fn linear_chain_orders_by_dependency() {
+        let specs = map(&[
+            ("a", spec_with_after(&[])),
+            ("b", spec_with_after(&["a"])),
+            ("c", spec_with_after(&["b"])),
+        ]);
+        let members: Vec<String> = ["c", "b", "a"].iter().map(|s| s.to_string()).collect();
+        let order = topo_order(&members, &specs).unwrap();
+        // a 在 b 前，b 在 c 前
+        let pos = |id: &str| order.iter().position(|x| x == id).unwrap();
+        assert!(pos("a") < pos("b"));
+        assert!(pos("b") < pos("c"));
+    }
+
+    #[test]
+    fn detects_cycle() {
+        let specs = map(&[
+            ("a", spec_with_after(&["b"])),
+            ("b", spec_with_after(&["a"])),
+        ]);
+        let members: Vec<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+        let err = topo_order(&members, &specs).unwrap_err();
+        assert_eq!(err.len(), 2); // 环上两个节点都报出来
+    }
+
+    #[test]
+    fn ignores_edges_to_non_members() {
+        // b 依赖一个不在集合里的 x，应被忽略，仍能排序
+        let specs = map(&[
+            ("a", spec_with_after(&[])),
+            ("b", spec_with_after(&["a", "x"])),
+        ]);
+        let members: Vec<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+        let order = topo_order(&members, &specs).unwrap();
+        assert_eq!(order, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn self_edge_ignored() {
+        let specs = map(&[("a", spec_with_after(&["a"]))]);
+        let members = vec!["a".to_string()];
+        assert_eq!(topo_order(&members, &specs).unwrap(), vec!["a".to_string()]);
+    }
+}

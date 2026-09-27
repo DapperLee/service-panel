@@ -420,3 +420,65 @@ textarea:focus {
 .dep-scroll svg {
   display: block;
 }
+
+/* 提权横幅 */
+.admin-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 18px;
+  background: rgba(241, 196, 15, 0.12);
+  border-bottom: 1px solid var(--yellow);
+  color: var(--text);
+  font-size: 13px;
+}
+.admin-banner .spacer {
+  flex: 1;
+}
+
+/* 事件时间线 */
+.event-list {
+  max-height: 56vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.event-row {
+  display: grid;
+  grid-template-columns: 150px 1fr 170px 1fr;
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  align-items: center;
+}
+.event-row:last-child {
+  border-bottom: none;
+}
+.event-time {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.event-svc {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.event-flow {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.event-arrow {
+  color: var(--text-dim);
+}
+.event-dim {
+  color: var(--text-dim);
+}
+.event-reason {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

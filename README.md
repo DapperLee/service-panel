@@ -187,6 +187,21 @@ service-panel/
 - **分组批量启停互斥 + 进度**：`group_ops` 集合防止连点起多条链抢锁；逐服务推 `group://progress`
   事件，前端 toast 显示"启动中 2/5 · 服务名"，不再一条链静默最多 45 秒。
 
+### 第三轮加固（可观测性、磁盘、权限、测试）
+
+- **事件时间线有界面了**：顶栏「时间线」打开 `EventsDialog`，展示最近状态变化的 `从→到 + 原因 + 退出码`；
+  `StateEvent` 补 `from` 字段，`set_state` 记录来源状态（此前恒为 None）。
+- **日志与事件不再只涨不删**：日志按天 + 20MB 双维度滚动（`rotate_if_oversized`），启动按 7 天保留清理
+  （`cleanup_old_logs`）；`service_events` 启动清理 + 每 500 条增量清理（`prune_events`，7 天 / 上限 5000 行）。
+- **提权探测**：`elevate.rs` 用 token 的 `TokenElevation` 判断是否管理员；非管理员时顶栏下方黄色横幅 +
+  「以管理员重启」按钮（PowerShell `Start-Process -Verb RunAs` 触发 UAC 后退出当前实例）。
+- **DB 迁移加版本阶梯**：`PRAGMA user_version` 驱动的 `migrate`，加列/改表不再静默失效；v2 删除了
+  只写不读的死列 `groups.start_order`。
+- **死代码清理**：移除 `spawn_supervisor` 一进来就被排空、发送端当场 drop 的 `autostart_rx`。
+- **单元测试**：`topo_order`（线性/环/非成员边/自环）、`logs::decode`（utf8/gbk/auto）、
+  `health::parse_status_line`、`secrets` 前缀兼容——12 个纯逻辑用例，`cargo test` 全绿。
+- 项目已纳入 git 版本管理。
+
 ## 关键设计点
 
 - **Job Object（KILL_ON_JOB_CLOSE）**：面板崩溃或被强杀时，被托管的进程树由操作系统

@@ -74,6 +74,7 @@ impl Runtime {
 #[derive(Clone)]
 pub struct StateEvent {
     pub id: String,
+    pub from: Option<State>,
     pub state: State,
     pub pid: Option<u32>,
     pub error: Option<String>,

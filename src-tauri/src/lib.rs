@@ -1,6 +1,8 @@
 mod commands;
 mod db;
 mod drivers;
+#[cfg(windows)]
+mod elevate;
 mod export;
 mod group;
 mod health;
@@ -97,6 +99,7 @@ pub fn run() {
                 let handle = app_handle.clone();
                 let db = state.db.clone();
                 let tray_state = state.clone();
+                let mut count = 0u32;
                 std::thread::spawn(move || {
                     for ev in rx {
                         {
@@ -104,14 +107,21 @@ pub fn run() {
                             db::record_event(
                                 &conn,
                                 &ev.id,
-                                None,
+                                ev.from.map(|s| format!("{:?}", s).to_lowercase()).as_deref(),
                                 &format!("{:?}", ev.state).to_lowercase(),
                                 ev.error.as_deref(),
                                 None,
                             );
                         }
+                        // 每 500 条事件顺带做一次过期清理，防 flapping 撑爆
+                        count += 1;
+                        if count % 500 == 0 {
+                            let conn = db.lock().unwrap();
+                            db::prune_events(&conn, 7, 5000);
+                        }
                         let payload = serde_json::json!({
                             "id": ev.id,
+                            "from": ev.from.map(|s| format!("{:?}", s).to_lowercase()),
                             "state": ev.state,
                             "pid": ev.pid,
                             "error": ev.error,
@@ -132,14 +142,20 @@ pub fn run() {
                 manager::ensure_runtime(&state, &v.id, v.spec, v.config_ok);
             }
 
+            // 启动清理：过期事件 + 超保留天数的日志目录
+            {
+                let conn = state.db.lock().unwrap();
+                db::prune_events(&conn, 7, 5000);
+            }
+            logs::cleanup_old_logs(&state.log_root, 7);
+
             // 系统托盘常驻
             if let Err(e) = tray::install(&app_handle, state.clone()) {
                 eprintln!("托盘初始化失败: {e}");
             }
 
             // 监督线程（含启动接管与自启）
-            let (_as_tx, as_rx) = std::sync::mpsc::channel::<()>();
-            supervisor::spawn_supervisor(state.clone(), as_rx);
+            supervisor::spawn_supervisor(state.clone());
 
             // 开机自启启动时：不弹主窗口，直接躲在托盘后面
             if launched_by_autostart() {
@@ -171,6 +187,8 @@ pub fn run() {
             commands::get_autostart,
             commands::set_autostart,
             commands::quit_app,
+            commands::is_admin,
+            commands::restart_as_admin,
             commands::export_config,
             commands::import_config,
         ])

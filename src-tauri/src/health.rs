@@ -59,13 +59,21 @@ fn http_probe(url: &str, timeout: Duration) -> Result<(), String> {
     if n == 0 {
         return Err("空响应".to_string());
     }
-    let parts: Vec<&str> = status_line.split_whitespace().collect();
-    let code: u16 = parts.get(1).and_then(|s| s.parse().ok()).ok_or("无法解析状态码")?;
+    let code = parse_status_line(&status_line)?;
     if (200..400).contains(&code) {
         Ok(())
     } else {
         Err(format!("HTTP {code}"))
     }
+}
+
+/// 从 "HTTP/1.1 200 OK" 抽状态码（纯函数，便于单测）
+fn parse_status_line(line: &str) -> Result<u16, String> {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    parts
+        .get(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .ok_or_else(|| "无法解析状态码".to_string())
 }
 
 /// 命令型探测：spawn 后轮询等待，超时则强杀，避免挂死的命令拖住监督线程。
@@ -100,5 +108,24 @@ fn command_probe(target: &str, timeout: Duration) -> Result<(), String> {
                 return Err(e.to_string());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_status_line;
+
+    #[test]
+    fn parse_status_ok() {
+        assert_eq!(parse_status_line("HTTP/1.1 200 OK").unwrap(), 200);
+        assert_eq!(parse_status_line("HTTP/1.0 302 Found").unwrap(), 302);
+        assert_eq!(parse_status_line("HTTP/1.1 404 Not Found").unwrap(), 404);
+    }
+
+    #[test]
+    fn parse_status_bad() {
+        assert!(parse_status_line("garbage").is_err());
+        assert!(parse_status_line("HTTP/1.1 abc").is_err());
+        assert!(parse_status_line("").is_err());
     }
 }

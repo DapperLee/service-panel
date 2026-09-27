@@ -28,38 +28,70 @@ pub fn open(db_dir: &Path) -> rusqlite::Result<Connection> {
 }
 
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(
-        r#"
-        CREATE TABLE IF NOT EXISTS groups (
-            id          TEXT PRIMARY KEY,
-            name        TEXT NOT NULL,
-            start_order TEXT NOT NULL DEFAULT '[]'
-        );
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
 
-        CREATE TABLE IF NOT EXISTS services (
-            id         TEXT PRIMARY KEY,
-            name       TEXT NOT NULL,
-            group_id   TEXT,
-            sort_order INTEGER NOT NULL DEFAULT 0,
-            enabled    INTEGER NOT NULL DEFAULT 0,
-            spec_json  TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
+    if version < 1 {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS groups (
+                id   TEXT PRIMARY KEY,
+                name TEXT NOT NULL
+            );
 
-        CREATE TABLE IF NOT EXISTS service_events (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            service_id TEXT NOT NULL,
-            ts         INTEGER NOT NULL,
-            from_state TEXT,
-            to_state   TEXT NOT NULL,
-            reason     TEXT,
-            exit_code  INTEGER
-        );
-        CREATE INDEX IF NOT EXISTS idx_events_service ON service_events(service_id, ts);
-        "#,
-    )?;
+            CREATE TABLE IF NOT EXISTS services (
+                id         TEXT PRIMARY KEY,
+                name       TEXT NOT NULL,
+                group_id   TEXT,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                enabled    INTEGER NOT NULL DEFAULT 0,
+                spec_json  TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS service_events (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                service_id TEXT NOT NULL,
+                ts         INTEGER NOT NULL,
+                from_state TEXT,
+                to_state   TEXT NOT NULL,
+                reason     TEXT,
+                exit_code  INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_events_service ON service_events(service_id, ts);
+            "#,
+        )?;
+    }
+
+    if version < 2 {
+        // 旧库的 groups.start_order 是只写不读的死列，存在则删除（拓扑顺序由 spec.after 派生）
+        let has: bool = conn
+            .prepare("PRAGMA table_info(groups)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .flatten()
+            .any(|col| col == "start_order");
+        if has {
+            conn.execute_batch("ALTER TABLE groups DROP COLUMN start_order;")?;
+        }
+    }
+
+    conn.pragma_update(None, "user_version", 2)?;
     Ok(())
+}
+
+/// 清理过期事件：删除 keep_days 之前的记录，并限制总量上限。
+pub fn prune_events(conn: &Connection, keep_days: i64, max_rows: i64) {
+    let cutoff = now_ts() - keep_days * 86400;
+    conn.execute("DELETE FROM service_events WHERE ts < ?1", params![cutoff])
+        .ok();
+    // 兜底：即便时间没到保留期，也只留最近 max_rows 条，防 flapping 撑爆
+    conn.execute(
+        "DELETE FROM service_events WHERE id NOT IN (
+            SELECT id FROM service_events ORDER BY ts DESC LIMIT ?1
+        )",
+        params![max_rows],
+    )
+    .ok();
 }
 
 fn now_ts() -> i64 {
@@ -220,7 +252,7 @@ pub fn list_groups(conn: &Connection) -> rusqlite::Result<Vec<GroupRow>> {
 
 pub fn create_group(conn: &Connection, id: &str, name: &str) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO groups (id, name, start_order) VALUES (?1,?2,'[]')",
+        "INSERT INTO groups (id, name) VALUES (?1,?2)",
         params![id, name],
     )?;
     Ok(())

@@ -5,6 +5,9 @@ use crate::types::{Desired, ServiceInput, ServiceView, State};
 use std::sync::Arc;
 use tauri_plugin_autostart::ManagerExt;
 
+#[cfg(windows)]
+use crate::elevate;
+
 #[tauri::command]
 pub fn list_services(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<ServiceView>, String> {
     // 静态列走 DB（不解密），spec + 动态状态走内存 Runtime（启动时已解密缓存）。
@@ -258,6 +261,44 @@ pub fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String>
 #[tauri::command]
 pub fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
+}
+
+/// 是否以管理员运行（非 Windows 恒返回 true，不影响功能）
+#[tauri::command]
+pub fn is_admin() -> bool {
+    #[cfg(windows)]
+    {
+        elevate::is_elevated()
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
+/// 以管理员权限重启面板（弹 UAC）。成功后退出当前实例。
+#[tauri::command]
+pub fn restart_as_admin(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe_str = exe.to_string_lossy().replace('\'', "''"); // PowerShell 单引号转义
+        std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!("Start-Process -FilePath '{exe_str}' -Verb RunAs"),
+            ])
+            .spawn()
+            .map_err(|e| format!("启动失败: {e}"))?;
+        app.exit(0);
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Err("仅 Windows 支持提权重启".to_string())
+    }
 }
 
 /// 导出配置到指定路径（明文 JSON）。返回导出的服务数量。

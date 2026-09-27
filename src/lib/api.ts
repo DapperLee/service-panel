@@ -25,6 +25,8 @@ export const api = {
   setAutostart: (enabled: boolean) =>
     invoke<void>("set_autostart", { enabled }),
   quit: () => invoke<void>("quit_app"),
+  isAdmin: () => invoke<boolean>("is_admin"),
+  restartAsAdmin: () => invoke<void>("restart_as_admin"),
   // —— 分组 ——
   listGroups: () => invoke<Group[]>("list_groups"),
   saveGroup: (id: string | null, name: string) =>

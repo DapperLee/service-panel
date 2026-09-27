@@ -7,6 +7,7 @@ import AddServiceDialog from "./components/AddServiceDialog";
 import SettingsDialog from "./components/SettingsDialog";
 import GroupManagerDialog from "./components/GroupManagerDialog";
 import DependencyGraph from "./components/DependencyGraph";
+import EventsDialog from "./components/EventsDialog";
 
 export default function App() {
   const [services, setServices] = useState<ServiceView[]>([]);
@@ -19,6 +20,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [groupMgrOpen, setGroupMgrOpen] = useState(false);
   const [graphOpen, setGraphOpen] = useState(false);
+  const [eventsOpen, setEventsOpen] = useState(false);
+  const [notAdmin, setNotAdmin] = useState(false);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -47,6 +50,7 @@ export default function App() {
   useEffect(() => {
     refresh();
     loadGroups();
+    api.isAdmin().then((ok) => setNotAdmin(!ok)).catch(() => {});
     const t = setInterval(refresh, 2500);
     return () => clearInterval(t);
   }, [refresh, loadGroups]);
@@ -152,6 +156,9 @@ export default function App() {
         <button className="ghost" onClick={() => setGroupMgrOpen(true)}>
           管理分组
         </button>
+        <button className="ghost" onClick={() => setEventsOpen(true)}>
+          时间线
+        </button>
         <button className="ghost" onClick={() => setSettingsOpen(true)}>
           设置
         </button>
@@ -159,6 +166,25 @@ export default function App() {
           + 添加服务
         </button>
       </div>
+
+      {notAdmin && (
+        <div className="admin-banner">
+          <span>当前非管理员身份，无法启停 Windows 服务（sc 会报错误码 5）。</span>
+          <button
+            className="primary"
+            onClick={() => {
+              if (confirm("以管理员身份重启面板？会弹出 UAC 确认。")) {
+                api.restartAsAdmin().catch((e) => setToast(String(e)));
+              }
+            }}
+          >
+            以管理员重启
+          </button>
+          <button className="ghost" onClick={() => setNotAdmin(false)}>
+            忽略
+          </button>
+        </div>
+      )}
 
       {/* 分组标签栏 */}
       <div className="groupbar">
@@ -279,6 +305,10 @@ export default function App() {
           groupName={groupName}
           onClose={() => setGraphOpen(false)}
         />
+      )}
+
+      {eventsOpen && (
+        <EventsDialog services={services} onClose={() => setEventsOpen(false)} />
       )}
     </div>
   );

@@ -139,3 +139,24 @@ pub fn decrypt(stored: &str) -> String {
         stored.strip_prefix(PREFIX).unwrap_or(stored).to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{decrypt, PREFIX};
+
+    #[test]
+    fn plaintext_without_prefix_passes_through() {
+        // 旧明文记录（无 enc: 前缀）应原样返回，兼容不丢配置
+        let json = "{\"driver\":\"command\",\"command\":\"node\"}";
+        assert_eq!(decrypt(json), json);
+    }
+
+    #[test]
+    fn prefix_is_recognized() {
+        assert!(format!("{PREFIX}abc").starts_with(PREFIX));
+        assert!(!json_hack().starts_with(PREFIX));
+    }
+    fn json_hack() -> String {
+        "{\"a\":1}".to_string()
+    }
+}
