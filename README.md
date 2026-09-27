@@ -25,6 +25,23 @@ npm run tauri dev    # 首次会编译 Rust，较慢；之后热更新
 的 `devUrl` 两处，改端口要同时改）。故意不用 vite 默认的 5173，避免和你机器上
 其它项目的 dev server 撞端口。
 
+## 以管理员运行（管 Windows 服务需要）
+
+管理 Windows 服务（`sc start/stop`）需要管理员权限，否则会报错误码 5。分两种情况：
+
+- **开发模式（`npm run tauri dev`）**：**不要点应用内的"以管理员重启"按钮**。
+  该按钮会用管理员身份裸启动 debug 版 exe，而 debug 版加载的是 vite 的 `localhost:5273`，
+  裸启时 vite 已随旧实例退出而停掉，会白屏报 `ERR_CONNECTION_REFUSED`（代码里已加守卫，
+  开发版点它会直接提示改用管理员终端）。
+  正确做法：用**管理员终端**跑整条 dev 命令——
+  1. 开始菜单搜「终端 / PowerShell」→ 右键「以管理员身份运行」；
+  2. `cd D:\code\develop\gx\mianban\service-panel` 然后 `npm run tauri dev`。
+  这样 vite 和 exe 都在提权环境里。
+
+- **生产模式（`npm run tauri build` 打包安装后）**：前端资源已内嵌进 exe，不依赖 dev server。
+  此时点顶栏提权横幅里的「以管理员重启」按钮即可正常弹 UAC 提权重启；
+  或右键 exe「以管理员身份运行」。开机自启项若需管理员，请在任务计划程序里勾选"使用最高权限运行"。
+
 ## 常见报错
 
 - **`Port 5173 is already in use` / `beforeDevCommand terminated`**
@@ -42,8 +59,9 @@ npm run tauri dev    # 首次会编译 Rust，较慢；之后热更新
 - **首次 `cargo build` 很慢**
   正常，要下 ~400 个 crate 并编译 bundled SQLite，之后走缓存就快了。
 
-- **管理 Windows 服务时 `sc start` 报权限错误**
-  需要管理员权限，以管理员身份运行面板。
+- **管理 Windows 服务时 `sc start` 报权限错误（错误码 5）**
+  需要管理员权限，见上方「以管理员运行」一节：开发模式用管理员终端跑 `npm run tauri dev`，
+  生产模式用应用内「以管理员重启」或右键 exe 提权运行。
 
 ## 打包发布
 
