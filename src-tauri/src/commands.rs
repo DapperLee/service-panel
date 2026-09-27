@@ -281,6 +281,14 @@ pub fn is_admin() -> bool {
 pub fn restart_as_admin(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(windows)]
     {
+        // 开发版（debug）exe 加载的是 vite devUrl，裸启会因 dev server 不在而白屏/连接拒绝。
+        // 提权请改用「管理员终端里跑 npm run tauri dev」，不要走这个按钮。
+        if cfg!(debug_assertions) {
+            return Err(
+                "开发模式不支持一键提权重启：请以管理员身份打开终端，再运行 npm run tauri dev。"
+                    .to_string(),
+            );
+        }
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let exe_str = exe.to_string_lossy().replace('\'', "''"); // PowerShell 单引号转义
         std::process::Command::new("powershell")
