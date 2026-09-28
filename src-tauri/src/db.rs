@@ -150,7 +150,9 @@ pub fn list_services(conn: &Connection) -> rusqlite::Result<Vec<ServiceView>> {
     let mut out = Vec::new();
     for row in rows {
         let (id, name, group_id, sort_order, enabled, spec_json) = row?;
-        out.push(row_to_view(id, name, group_id, sort_order, enabled, spec_json));
+        out.push(row_to_view(
+            id, name, group_id, sort_order, enabled, spec_json,
+        ));
     }
     Ok(out)
 }
@@ -218,7 +220,10 @@ pub fn update_service(
 
 pub fn delete_service(conn: &Connection, id: &str) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM services WHERE id=?1", params![id])?;
-    conn.execute("DELETE FROM service_events WHERE service_id=?1", params![id])?;
+    conn.execute(
+        "DELETE FROM service_events WHERE service_id=?1",
+        params![id],
+    )?;
     Ok(())
 }
 
@@ -280,7 +285,14 @@ pub fn delete_group(conn: &Connection, id: &str) -> rusqlite::Result<()> {
 }
 
 /// 事件表行：(service_id, ts, from_state, to_state, reason, exit_code)
-pub type EventRow = (String, i64, Option<String>, String, Option<String>, Option<i32>);
+pub type EventRow = (
+    String,
+    i64,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<i32>,
+);
 
 pub fn recent_events(conn: &Connection, limit: i64) -> rusqlite::Result<Vec<EventRow>> {
     let mut stmt = conn.prepare(

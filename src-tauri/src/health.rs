@@ -41,7 +41,8 @@ fn http_probe(url: &str, timeout: Duration) -> Result<(), String> {
         None => (rest, "/"),
     };
     let socket_addr: std::net::SocketAddr = authority.parse().or_else(|_| resolve(authority))?;
-    let mut stream = TcpStream::connect_timeout(&socket_addr, timeout).map_err(|e| e.to_string())?;
+    let mut stream =
+        TcpStream::connect_timeout(&socket_addr, timeout).map_err(|e| e.to_string())?;
     // 关键：读写都设超时，防止连上后对端不发数据导致 read_line 永久阻塞
     let _ = stream.set_write_timeout(Some(timeout));
     let _ = stream.set_read_timeout(Some(timeout));
@@ -55,7 +56,9 @@ fn http_probe(url: &str, timeout: Duration) -> Result<(), String> {
     let mut reader = BufReader::new(&stream);
     let mut status_line = String::new();
     // 读超时/无换行都会返回 Err，不会卡死
-    let n = reader.read_line(&mut status_line).map_err(|e| e.to_string())?;
+    let n = reader
+        .read_line(&mut status_line)
+        .map_err(|e| e.to_string())?;
     if n == 0 {
         return Err("空响应".to_string());
     }
@@ -78,7 +81,11 @@ fn parse_status_line(line: &str) -> Result<u16, String> {
 
 /// 命令型探测：spawn 后轮询等待，超时则强杀，避免挂死的命令拖住监督线程。
 fn command_probe(target: &str, timeout: Duration) -> Result<(), String> {
-    let (prog, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
+    let (prog, flag) = if cfg!(windows) {
+        ("cmd", "/C")
+    } else {
+        ("sh", "-c")
+    };
     let mut child = Command::new(prog)
         .args([flag, target])
         .stdout(Stdio::null())

@@ -108,7 +108,9 @@ pub fn run() {
                             db::record_event(
                                 &conn,
                                 &ev.id,
-                                ev.from.map(|s| format!("{:?}", s).to_lowercase()).as_deref(),
+                                ev.from
+                                    .map(|s| format!("{:?}", s).to_lowercase())
+                                    .as_deref(),
                                 &format!("{:?}", ev.state).to_lowercase(),
                                 ev.error.as_deref(),
                                 ev.exit_code,

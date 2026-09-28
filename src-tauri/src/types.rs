@@ -107,7 +107,7 @@ impl Default for RestartPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceSpec {
- pub driver: DriverKind,
+    pub driver: DriverKind,
     // —— Command 驱动字段 ——
     #[serde(default)]
     pub command: String,

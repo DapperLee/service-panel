@@ -103,7 +103,7 @@ pub fn stop_and_wait(service_name: &str, timeout: Duration) -> Result<bool, Stri
     let start = Instant::now();
     loop {
         match query_state(service_name) {
-            None => return Ok(true),          // 服务已消失，视为已停
+            None => return Ok(true), // 服务已消失，视为已停
             Some(STATE_STOPPED) => return Ok(true),
             Some(other) => {
                 if start.elapsed() > timeout {

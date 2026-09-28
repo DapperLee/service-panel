@@ -149,13 +149,19 @@ pub async fn restart_service(
 }
 
 #[tauri::command]
-pub fn start_all(app: tauri::AppHandle, state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+pub fn start_all(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
     // 按全局拓扑定序，后台逐个「启动 + 就绪等待」，进度经事件回报
     crate::group::start_all_seq(&app, state.inner().clone())
 }
 
 #[tauri::command]
-pub fn stop_all(app: tauri::AppHandle, state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+pub fn stop_all(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
     crate::group::stop_all_seq(&app, state.inner().clone())
 }
 
@@ -212,12 +218,20 @@ pub fn group_order(
 }
 
 #[tauri::command]
-pub fn start_group(app: tauri::AppHandle, state: tauri::State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+pub fn start_group(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<(), String> {
     crate::group::start_group(&app, state.inner().clone(), id)
 }
 
 #[tauri::command]
-pub fn stop_group(app: tauri::AppHandle, state: tauri::State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+pub fn stop_group(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<(), String> {
     crate::group::stop_group(&app, state.inner().clone(), id)
 }
 

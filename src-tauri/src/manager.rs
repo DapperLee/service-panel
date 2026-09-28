@@ -60,7 +60,12 @@ pub fn ensure_runtime(state: &Arc<AppState>, id: &str, spec: ServiceSpec, config
 }
 
 fn get_spec(state: &Arc<AppState>, id: &str) -> Option<ServiceSpec> {
-    state.runtimes.lock().unwrap().get(id).map(|r| r.spec.clone())
+    state
+        .runtimes
+        .lock()
+        .unwrap()
+        .get(id)
+        .map(|r| r.spec.clone())
 }
 
 /// 取 spec 与「配置是否可用」标记（坏配置禁止启动，见 start_impl）

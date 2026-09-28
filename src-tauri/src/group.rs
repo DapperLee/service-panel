@@ -41,7 +41,15 @@ pub struct GroupProgress {
     pub total: usize,
 }
 
-fn emit_progress(app: &AppHandle, group: &str, op: &str, current: &str, name: &str, index: usize, total: usize) {
+fn emit_progress(
+    app: &AppHandle,
+    group: &str,
+    op: &str,
+    current: &str,
+    name: &str,
+    index: usize,
+    total: usize,
+) {
     let _ = app.emit(
         "group://progress",
         &GroupProgress {
@@ -137,7 +145,11 @@ pub fn topo_order(
     if order.len() != members.len() {
         // 剩余未排入的就是环上的节点
         let done: HashSet<&String> = order.iter().collect();
-        let cycle: Vec<String> = members.iter().filter(|m| !done.contains(m)).cloned().collect();
+        let cycle: Vec<String> = members
+            .iter()
+            .filter(|m| !done.contains(m))
+            .cloned()
+            .collect();
         return Err(cycle);
     }
     Ok(order)
@@ -180,7 +192,15 @@ fn run_start(app: &AppHandle, state: &Arc<AppState>, ordered: &[String], group: 
     let names = names_of(state);
     let total = ordered.len();
     for (i, id) in ordered.iter().enumerate() {
-        emit_progress(app, group, "start", id, names.get(id).map(|s| s.as_str()).unwrap_or(id), i + 1, total);
+        emit_progress(
+            app,
+            group,
+            "start",
+            id,
+            names.get(id).map(|s| s.as_str()).unwrap_or(id),
+            i + 1,
+            total,
+        );
         let already = {
             let rts = state.runtimes.lock().unwrap();
             matches!(
@@ -209,7 +229,15 @@ fn run_stop(app: &AppHandle, state: &Arc<AppState>, ordered: &[String], group: &
     let total = ordered.len();
     // 逆序停止，先起的后停，避免依赖方还在用被依赖方
     for (i, id) in ordered.iter().rev().enumerate() {
-        emit_progress(app, group, "stop", id, names.get(id).map(|s| s.as_str()).unwrap_or(id), i + 1, total);
+        emit_progress(
+            app,
+            group,
+            "stop",
+            id,
+            names.get(id).map(|s| s.as_str()).unwrap_or(id),
+            i + 1,
+            total,
+        );
         if let Err(e) = manager::stop(state, id) {
             emit_result(app, group, "stop", Err(format!("{id} 停止失败：{e}")));
             return;
@@ -219,7 +247,10 @@ fn run_stop(app: &AppHandle, state: &Arc<AppState>, ordered: &[String], group: &
 }
 
 /// 计算某组的拓扑顺序（供命令层做环检测与前端展示）
-pub fn ordered_members(state: &Arc<AppState>, gid: &str) -> Result<(Vec<String>, String), Vec<String>> {
+pub fn ordered_members(
+    state: &Arc<AppState>,
+    gid: &str,
+) -> Result<(Vec<String>, String), Vec<String>> {
     let (members, name) = members_of(state, gid);
     let specs = spec_map(state);
     let order = topo_order(&members, &specs)?;
@@ -265,8 +296,7 @@ fn try_lock_group(state: &Arc<AppState>, key: &str) -> Option<GroupOpGuard> {
 
 pub fn start_group(app: &AppHandle, state: Arc<AppState>, gid: String) -> Result<(), String> {
     let _g = try_lock_group(&state, &gid).ok_or("该分组正在执行批量操作，请稍候")?;
-    let (ordered, name) = ordered_members(&state, &gid)
-        .map_err(|cycle| cycle_err(&cycle))?;
+    let (ordered, name) = ordered_members(&state, &gid).map_err(|cycle| cycle_err(&cycle))?;
     let app2 = app.clone();
     std::thread::spawn(move || run_start(&app2, &state, &ordered, &name));
     Ok(())
@@ -274,8 +304,7 @@ pub fn start_group(app: &AppHandle, state: Arc<AppState>, gid: String) -> Result
 
 pub fn stop_group(app: &AppHandle, state: Arc<AppState>, gid: String) -> Result<(), String> {
     let _g = try_lock_group(&state, &gid).ok_or("该分组正在执行批量操作，请稍候")?;
-    let (ordered, name) = ordered_members(&state, &gid)
-        .map_err(|cycle| cycle_err(&cycle))?;
+    let (ordered, name) = ordered_members(&state, &gid).map_err(|cycle| cycle_err(&cycle))?;
     let app2 = app.clone();
     std::thread::spawn(move || run_stop(&app2, &state, &ordered, &name));
     Ok(())
@@ -328,7 +357,10 @@ mod tests {
     }
 
     fn map(pairs: &[(&str, ServiceSpec)]) -> HashMap<String, ServiceSpec> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
     }
 
     #[test]

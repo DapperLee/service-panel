@@ -79,7 +79,10 @@ pub fn export_to_file(state: &Arc<AppState>, path: &str) -> Result<usize, String
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         groups: groups
             .into_iter()
-            .map(|g| ExportGroup { id: g.id, name: g.name })
+            .map(|g| ExportGroup {
+                id: g.id,
+                name: g.name,
+            })
             .collect(),
         services: services
             .into_iter()
@@ -141,11 +144,7 @@ pub fn import_from_file(
         let conn = state.db.lock().unwrap();
         for g in &file.groups {
             let exists: bool = conn
-                .query_row(
-                    "SELECT 1 FROM groups WHERE id=?1",
-                    [&g.id],
-                    |_| Ok(true),
-                )
+                .query_row("SELECT 1 FROM groups WHERE id=?1", [&g.id], |_| Ok(true))
                 .unwrap_or(false);
             if !exists {
                 db::create_group(&conn, &g.id, &g.name).map_err(|e| e.to_string())?;
@@ -159,12 +158,8 @@ pub fn import_from_file(
     for s in file.services {
         let exists = {
             let conn = state.db.lock().unwrap();
-            conn.query_row(
-                "SELECT 1 FROM services WHERE id=?1",
-                [&s.id],
-                |_| Ok(true),
-            )
-            .unwrap_or(false)
+            conn.query_row("SELECT 1 FROM services WHERE id=?1", [&s.id], |_| Ok(true))
+                .unwrap_or(false)
         };
         if exists {
             services_skipped += 1;

@@ -206,7 +206,9 @@ fn tick(state: &Arc<AppState>, sys: &System) {
             }
 
             // 4) 采集健康探测任务（阻塞 I/O，锁外并行做）
-            if rt.state == State::Running && rt.spec.healthcheck.kind != crate::types::HealthKind::None {
+            if rt.state == State::Running
+                && rt.spec.healthcheck.kind != crate::types::HealthKind::None
+            {
                 health_jobs.push((id.clone(), rt.spec.healthcheck.clone()));
             }
         }
