@@ -55,23 +55,23 @@ fn emit_progress(app: &AppHandle, group: &str, op: &str, current: &str, name: &s
     );
 }
 
-/// id -> 服务名（供进度事件显示）
+/// id -> 服务名（供进度事件显示）。用 list_static：只为拿名字而解密全部 spec 是浪费。
 fn names_of(state: &Arc<AppState>) -> HashMap<String, String> {
     let conn = state.db.lock().unwrap();
-    db::list_services(&conn)
+    db::list_static(&conn)
         .unwrap_or_default()
         .into_iter()
-        .map(|v| (v.id, v.name))
+        .map(|(id, name, _, _, _)| (id, name))
         .collect()
 }
 
-/// 构建 id -> spec 映射（以 DB 为准）
+/// 构建 id -> spec 映射。读内存 Runtime 的 spec 快照（启动时已解密缓存），
+/// 避免每次批量启动都对所有服务重做一遍 DPAPI 解密。
 fn spec_map(state: &Arc<AppState>) -> HashMap<String, ServiceSpec> {
-    let views = {
-        let conn = state.db.lock().unwrap();
-        db::list_services(&conn).unwrap_or_default()
-    };
-    views.into_iter().map(|v| (v.id, v.spec)).collect()
+    let rts = state.runtimes.lock().unwrap();
+    rts.iter()
+        .map(|(id, r)| (id.clone(), r.spec.clone()))
+        .collect()
 }
 
 /// 组内成员（按 sort_order 稳定排序）
@@ -230,10 +230,10 @@ pub fn ordered_members(state: &Arc<AppState>, gid: &str) -> Result<(Vec<String>,
 pub fn ordered_all(state: &Arc<AppState>) -> Result<Vec<String>, Vec<String>> {
     let members: Vec<String> = {
         let conn = state.db.lock().unwrap();
-        db::list_services(&conn)
+        db::list_static(&conn)
             .unwrap_or_default()
             .into_iter()
-            .map(|v| v.id)
+            .map(|(id, _, _, _, _)| id)
             .collect()
     };
     let specs = spec_map(state);
@@ -291,10 +291,10 @@ fn ordered_all_or_fallback(state: &Arc<AppState>) -> Vec<String> {
         return o;
     }
     let conn = state.db.lock().unwrap();
-    db::list_services(&conn)
+    db::list_static(&conn)
         .unwrap_or_default()
         .into_iter()
-        .map(|v| v.id)
+        .map(|(id, _, _, _, _)| id)
         .collect()
 }
 
@@ -321,9 +321,10 @@ mod tests {
     use std::collections::HashMap;
 
     fn spec_with_after(after: &[&str]) -> ServiceSpec {
-        let mut s = ServiceSpec::default();
-        s.after = after.iter().map(|x| x.to_string()).collect();
-        s
+        ServiceSpec {
+            after: after.iter().map(|x| x.to_string()).collect(),
+            ..Default::default()
+        }
     }
 
     fn map(pairs: &[(&str, ServiceSpec)]) -> HashMap<String, ServiceSpec> {

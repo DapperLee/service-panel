@@ -33,6 +33,8 @@ export default function ServiceCard({
   onChanged,
 }: Props) {
   const running = svc.state === "running";
+  // 坏配置（DPAPI 解不开/数据损坏）时后端会拒绝启动，这里同步置灰，避免无效点击
+  const broken = !svc.configOk;
   const transitioning =
     svc.state === "starting" ||
     svc.state === "stopping" ||
@@ -84,7 +86,7 @@ export default function ServiceCard({
         ) : (
           <button
             className="primary"
-            disabled={transitioning}
+            disabled={transitioning || broken}
             onClick={(e) => {
               e.stopPropagation();
               target(() => api.start(svc.id));
@@ -94,7 +96,7 @@ export default function ServiceCard({
           </button>
         )}
         <button
-          disabled={transitioning}
+          disabled={transitioning || broken}
           onClick={(e) => {
             e.stopPropagation();
             target(() => api.restart(svc.id));

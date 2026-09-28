@@ -9,6 +9,9 @@ import GroupManagerDialog from "./components/GroupManagerDialog";
 import DependencyGraph from "./components/DependencyGraph";
 import EventsDialog from "./components/EventsDialog";
 
+// 每个服务在内存里保留的日志行数上限（与 LogConsole 的显示上限一致）
+const MAX_LOG_LINES = 2000;
+
 export default function App() {
   const [services, setServices] = useState<ServiceView[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -58,14 +61,21 @@ export default function App() {
   // 订阅日志流
   useEffect(() => {
     const un = onLog((events) => {
-      // 一批只 setState 一次；按 serviceId 归并后追加，避免每行一次数组拷贝/重渲染
       if (events.length === 0) return;
+      // 先按 serviceId 归并，再对每个服务只做一次数组拷贝。
+      // 逐事件 spread 会让一批 N 行退化成 N 次 O(2000) 拷贝——省了 IPC 却加重了拷贝。
+      const grouped: Record<string, LogLine[]> = {};
+      for (const ev of events) {
+        (grouped[ev.serviceId] ??= []).push(ev.line);
+      }
       setLogs((prev) => {
         const next = { ...prev };
-        for (const ev of events) {
-          const arr = next[ev.serviceId] ?? [];
-          const merged = arr.length + events.length > 2000 ? arr.slice(-1500) : arr;
-          next[ev.serviceId] = [...merged, ev.line];
+        for (const [id, lines] of Object.entries(grouped)) {
+          const merged = [...(next[id] ?? []), ...lines];
+          next[id] =
+            merged.length > MAX_LOG_LINES
+              ? merged.slice(merged.length - MAX_LOG_LINES)
+              : merged;
         }
         return next;
       });

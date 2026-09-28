@@ -12,6 +12,9 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+/// 单批并发探测数上限（外部状态探测与健康探测各自独立分块）
+const PROBE_CONCURRENCY: usize = 8;
+
 /// 启动后台监督线程
 pub fn spawn_supervisor(state: Arc<AppState>) {
     thread::spawn(move || {
@@ -29,37 +32,66 @@ pub fn spawn_supervisor(state: Arc<AppState>) {
 
 /// 应用重启后不盲目再 start：外部驱动查真实状态；Command 驱动若无法接管则置 Stopped
 fn takeover_and_autostart(state: &Arc<AppState>) {
-    // 同步外部驱动真实状态
-    let ids: Vec<String> = {
+    // 同步外部驱动真实状态：探测同样分块并发，服务多时启动不再被 N 次串行 sc query 拖慢
+    let probes: Vec<(String, DriverKind, String)> = {
         let rts = state.runtimes.lock().unwrap();
         rts.iter()
-            .filter(|(_, r)| matches!(r.spec.driver, DriverKind::WindowsService | DriverKind::Docker))
-            .map(|(id, _)| id.clone())
+            .filter_map(|(id, r)| match r.spec.driver {
+                DriverKind::WindowsService => Some((
+                    id.clone(),
+                    DriverKind::WindowsService,
+                    r.spec.service_name.clone(),
+                )),
+                DriverKind::Docker => {
+                    Some((id.clone(), DriverKind::Docker, r.spec.container.clone()))
+                }
+                _ => None,
+            })
             .collect()
     };
-    for id in ids {
-        let spec = state.runtimes.lock().unwrap().get(&id).map(|r| r.spec.clone());
-        let Some(spec) = spec else { continue };
-        let running = match spec.driver {
-            DriverKind::WindowsService => winservice_running(&spec.service_name),
-            DriverKind::Docker => docker_running(&spec.container),
-            _ => None,
+
+    let mut takeover_results: Vec<(String, Option<bool>)> = Vec::new();
+    for chunk in probes.chunks(PROBE_CONCURRENCY) {
+        let part: Vec<(String, Option<bool>)> = thread::scope(|s| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|(id, driver, target)| {
+                    s.spawn(move || {
+                        let running = match driver {
+                            DriverKind::WindowsService => {
+                                crate::drivers::winservice::status_running(target)
+                            }
+                            DriverKind::Docker => crate::drivers::docker::status_running(target),
+                            _ => None,
+                        };
+                        (id.clone(), running)
+                    })
+                })
+                .collect();
+            handles.into_iter().filter_map(|h| h.join().ok()).collect()
+        });
+        takeover_results.extend(part);
+    }
+
+    for (id, running) in takeover_results {
+        let Some(running) = running else { continue };
+        let st = if running {
+            State::Running
+        } else {
+            State::Stopped
         };
-        if let Some(running) = running {
-            let st = if running { State::Running } else { State::Stopped };
-            {
-                let mut rts = state.runtimes.lock().unwrap();
-                if let Some(rt) = rts.get_mut(&id) {
-                    rt.state = st;
-                    // 接管时若已在运行，期望态也置 Running，避免被当成用户已停止
-                    if running {
-                        rt.desired = Desired::Running;
-                    }
+        {
+            let mut rts = state.runtimes.lock().unwrap();
+            if let Some(rt) = rts.get_mut(&id) {
+                rt.state = st;
+                // 接管时若已在运行，期望态也置 Running，避免被当成用户已停止
+                if running {
+                    rt.desired = Desired::Running;
                 }
             }
-            if running {
-                crate::logsrc::attach(state, &id);
-            }
+        }
+        if running {
+            crate::logsrc::attach(state, &id);
         }
     }
 
@@ -94,13 +126,6 @@ fn enabled_ids(state: &Arc<AppState>) -> std::collections::HashSet<String> {
         }
     }
     set
-}
-
-fn winservice_running(name: &str) -> Option<bool> {
-    crate::drivers::winservice::status_running(name)
-}
-fn docker_running(c: &str) -> Option<bool> {
-    crate::drivers::docker::status_running(c)
 }
 
 fn tick(state: &Arc<AppState>, sys: &System) {
@@ -150,6 +175,7 @@ fn tick(state: &Arc<AppState>, sys: &System) {
                             state: State::Crashed,
                             pid: None,
                             error: rt.last_error.clone(),
+                            exit_code: Some(code),
                         });
                         maybe_schedule_restart(rt, now);
                     } else {
@@ -160,6 +186,7 @@ fn tick(state: &Arc<AppState>, sys: &System) {
                             state: State::Stopped,
                             pid: None,
                             error: None,
+                            exit_code: None,
                         });
                     }
                     continue;
@@ -185,37 +212,45 @@ fn tick(state: &Arc<AppState>, sys: &System) {
         }
     }
 
-    // —— Phase B：锁外并行探测，绝不持锁做网络/子进程 I/O ——
-    let external_results: Vec<(String, Option<bool>)> = thread::scope(|s| {
-        let handles: Vec<_> = external_jobs
-            .into_iter()
-            .map(|(id, driver, target)| {
-                s.spawn(move || {
-                    let running = match driver {
-                        DriverKind::WindowsService => {
-                            crate::drivers::winservice::status_running(&target)
-                        }
-                        DriverKind::Docker => crate::drivers::docker::status_running(&target),
-                        _ => None,
-                    };
-                    (id, running)
+    // —— Phase B：锁外探测，绝不持锁做网络/子进程 I/O ——
+    // 分块并发：单批最多 PROBE_CONCURRENCY 个线程。每个探测都要起子进程（sc / docker）
+    // 或做网络握手，服务多时若一 tick 全量并发，线程与子进程能瞬间堆出上百个。
+    // 探测线程 panic 时该 id 直接缺席：外部状态视为未知（不误判崩溃）、
+    // 健康结果视为未探测（不累加 unhealthy_streak）。
+    let mut external_results: Vec<(String, Option<bool>)> = Vec::new();
+    for chunk in external_jobs.chunks(PROBE_CONCURRENCY) {
+        let part: Vec<(String, Option<bool>)> = thread::scope(|s| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|(id, driver, target)| {
+                    s.spawn(move || {
+                        let running = match driver {
+                            DriverKind::WindowsService => {
+                                crate::drivers::winservice::status_running(target)
+                            }
+                            DriverKind::Docker => crate::drivers::docker::status_running(target),
+                            _ => None,
+                        };
+                        (id.clone(), running)
+                    })
                 })
-            })
-            .collect();
-        handles.into_iter().map(|h| h.join().unwrap_or_default()).collect()
-    });
-    let health_results: Vec<(String, Result<(), String>)> = thread::scope(|s| {
-        let handles: Vec<_> = health_jobs
-            .into_iter()
-            .map(|(id, hc)| {
-                s.spawn(move || {
-                    let r = health::check(&hc);
-                    (id, r)
-                })
-            })
-            .collect();
-        handles.into_iter().map(|h| h.join().unwrap_or_else(|_| ("?".into(), Err("panic".into())))).collect()
-    });
+                .collect();
+            handles.into_iter().filter_map(|h| h.join().ok()).collect()
+        });
+        external_results.extend(part);
+    }
+
+    let mut health_results: Vec<(String, Result<(), String>)> = Vec::new();
+    for chunk in health_jobs.chunks(PROBE_CONCURRENCY) {
+        let part: Vec<(String, Result<(), String>)> = thread::scope(|s| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|(id, hc)| s.spawn(move || (id.clone(), health::check(hc))))
+                .collect();
+            handles.into_iter().filter_map(|h| h.join().ok()).collect()
+        });
+        health_results.extend(part);
+    }
 
     let ext_map: HashMap<String, Option<bool>> = external_results.into_iter().collect();
     let health_map: HashMap<String, Result<(), String>> = health_results.into_iter().collect();
@@ -246,6 +281,7 @@ fn tick(state: &Arc<AppState>, sys: &System) {
                     state: State::Crashed,
                     pid: None,
                     error: Some("外部服务未在运行".to_string()),
+                    exit_code: None,
                 });
                 to_detach.push(id.clone());
                 maybe_schedule_restart(rt, now);
@@ -269,6 +305,7 @@ fn tick(state: &Arc<AppState>, sys: &System) {
                                     state: State::Unhealthy,
                                     pid: rt.live.as_ref().map(|l| l.pid),
                                     error: Some("健康检查连续失败".to_string()),
+                                    exit_code: None,
                                 });
                                 if rt.spec.restart_policy.mode != RestartMode::Never {
                                     maybe_schedule_restart(rt, now);
@@ -280,15 +317,14 @@ fn tick(state: &Arc<AppState>, sys: &System) {
             }
 
             // 到达退避时间 -> 执行重启
-            if rt.state == State::Crashed || rt.state == State::Restarting {
-                if rt.desired == Desired::Running
-                    && rt.next_attempt_at != 0
-                    && now >= rt.next_attempt_at
-                {
-                    to_restart.push(id.clone());
-                    rt.next_attempt_at = 0;
-                    rt.state = State::Restarting;
-                }
+            if matches!(rt.state, State::Crashed | State::Restarting)
+                && rt.desired == Desired::Running
+                && rt.next_attempt_at != 0
+                && now >= rt.next_attempt_at
+            {
+                to_restart.push(id.clone());
+                rt.next_attempt_at = 0;
+                rt.state = State::Restarting;
             }
         }
     }

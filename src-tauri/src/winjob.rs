@@ -2,6 +2,8 @@
 //! 供 Command 驱动（托管进程）与日志尾随子进程（docker logs -f）复用，
 //! 保证面板崩溃或被强杀时不会遗留孤儿进程。
 #![cfg(windows)]
+// 这些是 Win32 类型别名的原样拼写（HANDLE / BOOL），改名反而对不上 MSDN
+#![allow(clippy::upper_case_acronyms)]
 
 use std::ffi::c_void;
 use std::io;

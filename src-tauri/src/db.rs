@@ -1,6 +1,5 @@
 use crate::types::{Desired, ServiceSpec, ServiceView, State};
 use rusqlite::{params, Connection};
-use serde_json;
 use std::path::Path;
 
 /// 写库前对整条 spec_json 加密（含 env 密钥）。
@@ -8,6 +7,11 @@ fn pack_spec(spec: &ServiceSpec) -> String {
     let json = serde_json::to_string(spec).unwrap_or_else(|_| "{}".to_string());
     crate::secrets::encrypt(&json)
 }
+
+/// spec 解密/解析失败时的统一告警文案。
+/// 既用于导出中止的提示，也作为 last_error 落到卡片上，让用户看得见。
+pub const CONFIG_BROKEN_MSG: &str =
+    "配置解析失败（DPAPI 不可用或数据损坏），请重新编辑保存；启动与导出已临时禁止";
 
 /// 读库后解密 spec_json；兼容旧的明文记录。返回 (spec, 是否解析成功)。
 fn unpack_spec(stored: &str) -> (ServiceSpec, bool) {
@@ -122,7 +126,7 @@ fn row_to_view(
         last_error: if config_ok {
             None
         } else {
-            Some("配置解析失败（可能 DPAPI 不可用或数据损坏），请勿导出以免丢失".to_string())
+            Some(CONFIG_BROKEN_MSG.to_string())
         },
         config_ok,
     }
@@ -151,11 +155,13 @@ pub fn list_services(conn: &Connection) -> rusqlite::Result<Vec<ServiceView>> {
     Ok(out)
 }
 
+/// services 表的轻量行：(id, name, group_id, sort_order, enabled)。
+/// 不解密 spec，供轮询与拓扑排序这类只要静态列的场景用。
+pub type StaticRow = (String, String, Option<String>, i64, bool);
+
 /// 轻量查询：只取静态列，不解密 spec（避免每轮轮询重复 DPAPI）。
 /// 动态状态与 spec 由内存 Runtime 提供。
-pub fn list_static(
-    conn: &Connection,
-) -> rusqlite::Result<Vec<(String, String, Option<String>, i64, bool)>> {
+pub fn list_static(conn: &Connection) -> rusqlite::Result<Vec<StaticRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, group_id, sort_order, enabled
          FROM services ORDER BY sort_order ASC, name ASC",
@@ -273,10 +279,10 @@ pub fn delete_group(conn: &Connection, id: &str) -> rusqlite::Result<()> {
     Ok(())
 }
 
-pub fn recent_events(
-    conn: &Connection,
-    limit: i64,
-) -> rusqlite::Result<Vec<(String, i64, Option<String>, String, Option<String>, Option<i32>)>> {
+/// 事件表行：(service_id, ts, from_state, to_state, reason, exit_code)
+pub type EventRow = (String, i64, Option<String>, String, Option<String>, Option<i32>);
+
+pub fn recent_events(conn: &Connection, limit: i64) -> rusqlite::Result<Vec<EventRow>> {
     let mut stmt = conn.prepare(
         "SELECT service_id, ts, from_state, to_state, reason, exit_code
          FROM service_events ORDER BY ts DESC LIMIT ?1",

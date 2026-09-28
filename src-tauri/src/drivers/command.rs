@@ -1,8 +1,6 @@
-use crate::logs::LogFile;
+use crate::logs::{LogEmitter, Sink};
 use crate::types::ServiceSpec;
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
-use std::path::Path;
 
 #[cfg(windows)]
 use crate::winjob::Job;
@@ -21,16 +19,24 @@ pub struct SpawnedProc {
     pub job: Option<Job>,
 }
 
+/// 启动前的命令校验。空命令必须直接失败：否则会落到下面 `cmd /C` 那条回退分支，
+/// 而 `cmd /C ""` 能成功 spawn 并立刻退出，被当成「启动成功」之后就陷入
+/// 假启动 -> 崩溃检测 -> 指数退避 -> 长冷却 -> 再假启动 的死循环。
+pub fn validate(spec: &ServiceSpec) -> Result<(), String> {
+    if spec.command.trim().is_empty() {
+        return Err("命令为空，无法启动：请填写可执行文件或脚本路径".to_string());
+    }
+    Ok(())
+}
+
 /// 启动命令型服务：spawn + 立即挂到 Job Object + 起日志读取线程
 pub fn spawn(
     spec: &ServiceSpec,
     service_id: &str,
-    log_dir: &Path,
-    emitter: Arc<dyn Fn(crate::logs::LogEvent) + Send + Sync>,
+    sink: Sink,
+    emitter: LogEmitter,
 ) -> Result<SpawnedProc, String> {
-    let log = LogFile::create(log_dir).map_err(|e| format!("无法创建日志文件: {e}"))?;
-    let sink = log.writer();
-
+    validate(spec)?;
     // 清洗：用户常从别处复制粘贴，带前导/尾随空格会让 CreateProcess 报
     // “目录名称无效 (os error 267)” 或找不到程序。这里统一 trim。
     let command = spec.command.trim().to_string();
@@ -144,4 +150,36 @@ pub fn spawn(
         #[cfg(windows)]
         job,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate;
+    use crate::types::ServiceSpec;
+
+    fn spec_with_command(cmd: &str) -> ServiceSpec {
+        ServiceSpec {
+            command: cmd.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// 空命令若在 spawn 里放过，就会落到 `cmd /C ""` 回退：那条命令能成功 spawn
+    /// 并立刻退出，于是被当成启动成功，陷入假启动崩溃循环。
+    #[test]
+    fn empty_command_is_rejected() {
+        let err = validate(&spec_with_command("")).err().unwrap();
+        assert!(err.contains("命令为空"), "实际错误: {err}");
+    }
+
+    #[test]
+    fn whitespace_only_command_is_rejected() {
+        let err = validate(&spec_with_command("   ")).err().unwrap();
+        assert!(err.contains("命令为空"), "实际错误: {err}");
+    }
+
+    #[test]
+    fn real_command_passes_validation() {
+        assert!(validate(&spec_with_command("  python  ")).is_ok());
+    }
 }

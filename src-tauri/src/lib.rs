@@ -65,14 +65,15 @@ pub fn run() {
             let conn = db::open(&db_dir).map_err(|e| format!("数据库初始化失败: {e}"))?;
             let state = Arc::new(AppState::new(conn, log_root));
 
-            // 日志批量缓冲：emitter 只入队，flusher 线程每 80ms 聚合成数组一次性 emit，
-            // 避免话痨服务每秒上千次 IPC + 前端上千次数组拷贝/重渲染。
-            let log_buf: Arc<std::sync::Mutex<Vec<logs::LogEvent>>> =
-                Arc::new(std::sync::Mutex::new(Vec::new()));
+            // 日志批量缓冲：emitter 只入队（队列有界，满了只丢 UI 流并计数、磁盘仍完整），
+            // flusher 线程每 80ms 聚合成数组一次性 emit，避免话痨服务每秒上千次 IPC
+            // 以及单批无上限撑爆 webview 消息。
+            let log_buf: Arc<std::sync::Mutex<logs::LogQueue>> =
+                Arc::new(std::sync::Mutex::new(logs::LogQueue::new(2000)));
             {
                 let buf = log_buf.clone();
-                let emitter: Arc<dyn Fn(logs::LogEvent) + Send + Sync> = Arc::new(move |ev| {
-                    buf.lock().unwrap().push(ev);
+                let emitter: logs::LogEmitter = Arc::new(move |ev| {
+                    let _ = buf.lock().unwrap().push(ev);
                 });
                 *state.emitter.lock().unwrap() = Some(emitter);
             }
@@ -82,11 +83,11 @@ pub fn run() {
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_millis(80));
                     let batch = {
-                        let mut b = buf.lock().unwrap();
-                        if b.is_empty() {
+                        let mut q = buf.lock().unwrap();
+                        if q.is_empty() {
                             continue;
                         }
-                        std::mem::take(&mut *b)
+                        q.take_batch()
                     };
                     let _ = handle.emit("log://batch", &batch);
                 });
@@ -110,7 +111,7 @@ pub fn run() {
                                 ev.from.map(|s| format!("{:?}", s).to_lowercase()).as_deref(),
                                 &format!("{:?}", ev.state).to_lowercase(),
                                 ev.error.as_deref(),
-                                None,
+                                ev.exit_code,
                             );
                         }
                         // 每 500 条事件顺带做一次过期清理，防 flapping 撑爆

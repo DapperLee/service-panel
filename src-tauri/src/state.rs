@@ -1,4 +1,4 @@
-use crate::logs::LogEvent;
+use crate::logs::{LogEmitter, Sink};
 use crate::types::{Desired, ServiceSpec, State};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -38,8 +38,13 @@ pub struct Runtime {
     pub live: Option<LiveProc>,
     /// Docker 日志尾随子进程
     pub tail: Option<LogTail>,
-    /// 文件尾随线程的停止标志
-    pub file_stop: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// 文件尾随线程的停止信号发送端 + JoinHandle：detach 时 send 再 join，
+    /// 确保线程真的退出。旧实现只置一个 AtomicBool 标志、不 join，紧邻的重启
+    /// 会让新旧两个尾随线程重叠约 1 秒，把同一行日志推两遍。
+    pub tail_stop: Option<std::sync::mpsc::Sender<()>>,
+    pub tail_join: Option<std::thread::JoinHandle<()>>,
+    /// 该服务唯一的日志写入端（按天 + 按字节滚动都在它内部判）
+    pub sink: Option<Sink>,
     /// 最近一次采样的资源占用（supervisor 每 tick 刷新）
     pub cpu: f32,
     pub mem_mb: f32,
@@ -61,7 +66,9 @@ impl Runtime {
             spec,
             live: None,
             tail: None,
-            file_stop: None,
+            tail_stop: None,
+            tail_join: None,
+            sink: None,
             cpu: 0.0,
             mem_mb: 0.0,
             config_ok: true,
@@ -78,6 +85,8 @@ pub struct StateEvent {
     pub state: State,
     pub pid: Option<u32>,
     pub error: Option<String>,
+    /// 进程退出码（仅托管进程意外退出时有值），写进 service_events.exit_code
+    pub exit_code: Option<i32>,
 }
 
 /// 全局共享状态，通过 Tauri 的 manage 注入
@@ -85,14 +94,16 @@ pub struct AppState {
     pub db: Arc<Mutex<rusqlite::Connection>>,
     pub runtimes: Arc<Mutex<HashMap<String, Runtime>>>,
     pub log_root: PathBuf,
-    /// 日志行广播函数，app.setup 里注入（闭包捕获 AppHandle）
-    pub emitter: Arc<Mutex<Option<Arc<dyn Fn(LogEvent) + Send + Sync>>>>,
+    /// 日志行广播函数，app.setup 里注入（闭包捕获批量队列）
+    pub emitter: Arc<Mutex<Option<LogEmitter>>>,
     /// 状态变化发送端，setup 里注入
     pub state_tx: Arc<Mutex<Option<Sender<StateEvent>>>>,
     /// 正在执行生命周期操作（启/停/重启）的服务 id，用于串行化同一服务的并发操作
     pub ops: Arc<Mutex<std::collections::HashSet<String>>>,
     /// 正在执行批量启停的分组 key（组 id 或 "all"），防止并发起多条 run_start 链
     pub group_ops: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// 上一次重建托盘菜单时的签名；签名没变就不必重建整个菜单
+    pub tray_sig: Arc<Mutex<String>>,
 }
 
 impl AppState {
@@ -105,6 +116,7 @@ impl AppState {
             state_tx: Arc::new(Mutex::new(None)),
             ops: Arc::new(Mutex::new(std::collections::HashSet::new())),
             group_ops: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            tray_sig: Arc::new(Mutex::new(String::new())),
         }
     }
 
@@ -112,7 +124,19 @@ impl AppState {
         self.log_root.join(id)
     }
 
-    pub fn current_emitter(&self) -> Option<Arc<dyn Fn(LogEvent) + Send + Sync>> {
+    /// 取（必要时创建）该服务唯一的日志写入端。全局唯一是滚动安全的前提：
+    /// 同一时刻只有一个句柄开着这个日志文件，才能按累计字节切分片。
+    /// 返回 None 表示服务不存在，或日志目录创建/文件打开失败。
+    pub fn log_sink(&self, id: &str) -> Option<Sink> {
+        let mut rts = self.runtimes.lock().unwrap();
+        let rt = rts.get_mut(id)?;
+        if rt.sink.is_none() {
+            rt.sink = crate::logs::LogSink::open(&self.log_dir(id)).ok();
+        }
+        rt.sink.clone()
+    }
+
+    pub fn current_emitter(&self) -> Option<LogEmitter> {
         self.emitter.lock().unwrap().clone()
     }
 
