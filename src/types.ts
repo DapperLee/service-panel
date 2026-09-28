@@ -18,6 +18,18 @@ export interface HealthCheck {
   intervalSecs: number;
   timeoutSecs: number;
   unhealthyThreshold: number;
+  /** https 探测放过自签证书/域名不匹配（本地 dev 证书）。省略=不放过 */
+  tlsInsecure?: boolean;
+}
+
+/** 端口冲突体检结果：服务声明的端口被别的进程占着 */
+export interface PortAudit {
+  serviceId: string;
+  serviceName: string;
+  port: number;
+  listenerPid: number | null;
+  listenerName: string | null;
+  conflict: boolean;
 }
 
 export interface RestartPolicy {

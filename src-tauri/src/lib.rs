@@ -9,6 +9,7 @@ mod health;
 mod logs;
 mod logsrc;
 mod manager;
+mod netdiag;
 mod secrets;
 mod state;
 mod supervisor;
@@ -194,6 +195,7 @@ pub fn run() {
             commands::restart_as_admin,
             commands::export_config,
             commands::import_config,
+            commands::port_audit,
         ])
         .run(tauri::generate_context!())
         .expect("运行 服务面板 失败");

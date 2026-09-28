@@ -72,7 +72,12 @@ extern "system" {
     ) -> BOOL;
     fn AssignProcessToJobObject(job: HANDLE, process: HANDLE) -> BOOL;
     fn CloseHandle(handle: HANDLE) -> BOOL;
+    fn OpenProcess(desired_access: u32, inherit_handle: BOOL, process_id: u32) -> HANDLE;
 }
+
+/// 挂已有进程进 Job 所需的权限
+const PROCESS_SET_QUOTA: u32 = 0x0100;
+const PROCESS_TERMINATE: u32 = 0x0001;
 
 pub struct Job {
     handle: HANDLE,
@@ -106,6 +111,24 @@ impl Job {
     pub fn assign(&self, child: &Child) -> io::Result<()> {
         unsafe {
             let ok = AssignProcessToJobObject(self.handle, child.as_raw_handle() as HANDLE);
+            if ok == TRUE {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        }
+    }
+
+    /// 把**已经在运行**的进程挂进本 Job（面板重启后接管场景）。
+    /// 挂不上就返回 Err，调用方据此放弃接管——绝不在没有 Job 兜底的情况下认领进程。
+    pub fn assign_pid(&self, pid: u32) -> io::Result<()> {
+        unsafe {
+            let h = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+            if h.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let ok = AssignProcessToJobObject(self.handle, h);
+            CloseHandle(h);
             if ok == TRUE {
                 Ok(())
             } else {

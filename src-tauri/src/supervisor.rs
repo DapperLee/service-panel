@@ -95,6 +95,19 @@ fn takeover_and_autostart(state: &Arc<AppState>) {
         }
     }
 
+    // Command 驱动没有外部注册表可查状态：按「命令行唯一 + 声明端口对得上」认领
+    // 已在跑的进程。必须排在自启之前，否则会对同一个服务再启一份去撞端口。
+    let command_ids: Vec<String> = {
+        let rts = state.runtimes.lock().unwrap();
+        rts.iter()
+            .filter(|(_, r)| r.spec.driver == DriverKind::Command && r.live.is_none())
+            .map(|(id, _)| id.clone())
+            .collect()
+    };
+    for id in command_ids {
+        manager::try_adopt(state, &id);
+    }
+
     // 拉起 enabled 且当前为 Stopped 的服务
     let autostart: Vec<String> = {
         let rts = state.runtimes.lock().unwrap();
@@ -162,10 +175,16 @@ fn tick(state: &Arc<AppState>, sys: &System) {
                     if let Ok(Some(status)) = live.child.try_wait() {
                         exited = Some(status.code().unwrap_or(-1));
                     }
+                } else if let Some(pid) = rt.adopted.as_ref().map(|a| a.pid) {
+                    // 接管的进程没有 Child 句柄，用本轮已刷新的内核快照判存活
+                    if sys.process(Pid::from_u32(pid)).is_none() {
+                        exited = Some(-1);
+                    }
                 }
                 if let Some(code) = exited {
                     let prev = rt.state;
                     rt.live = None; // drop 触发 Job 回收
+                    rt.adopted = None;
                     if rt.desired == Desired::Running {
                         rt.state = State::Crashed;
                         rt.last_error = Some(format!("进程意外退出 code={code}"));
@@ -305,7 +324,7 @@ fn tick(state: &Arc<AppState>, sys: &System) {
                                     id: id.clone(),
                                     from: Some(prev),
                                     state: State::Unhealthy,
-                                    pid: rt.live.as_ref().map(|l| l.pid),
+                                    pid: rt.observed_pid(),
                                     error: Some("健康检查连续失败".to_string()),
                                     exit_code: None,
                                 });

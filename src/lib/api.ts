@@ -5,6 +5,7 @@ import type {
   GroupResult,
   ImportOutcome,
   LogEvent,
+  PortAudit,
   ServiceInput,
   ServiceView,
   StateChange,
@@ -39,6 +40,8 @@ export const api = {
   exportConfig: (path: string) => invoke<number>("export_config", { path }),
   importConfig: (path: string, replace: boolean) =>
     invoke<ImportOutcome>("import_config", { path, replace }),
+  // —— 端口体检 ——
+  portAudit: () => invoke<PortAudit[]>("port_audit"),
 };
 
 export function onLog(cb: (events: LogEvent[]) => void): Promise<UnlistenFn> {

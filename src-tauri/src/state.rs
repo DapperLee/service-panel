@@ -24,6 +24,15 @@ pub struct LogTail {
     pub job: Option<crate::winjob::Job>,
 }
 
+/// 被接管的、非面板启动的进程
+pub struct Adopted {
+    pub pid: u32,
+    /// 只为了 Drop：关闭句柄即让 OS 结束该进程树
+    #[cfg(windows)]
+    #[allow(dead_code)]
+    pub job: Option<crate::drivers::command::JobHandle>,
+}
+
 /// 服务的运行时信息（状态机 + 重启退避计数）
 pub struct Runtime {
     pub state: State,
@@ -36,6 +45,12 @@ pub struct Runtime {
     /// spec 快照，重启时不需要重查 DB
     pub spec: ServiceSpec,
     pub live: Option<LiveProc>,
+    /// 面板重启后**接管**的进程：面板之外启动、但命令行与端口都指向本服务。
+    /// 没有 Child 句柄，所以只能靠内核快照判存活；停止它的唯一手段是 drop 下面这个
+    /// KILL_ON_JOB_CLOSE 的 Job 句柄（由操作系统连带结束整棵进程树）。
+    /// 用附加字段而不是把 LiveProc 改成枚举，是为了不惊动所有 `rt.live` 分支——
+    /// 接管是低频路径，改动面小得多。
+    pub adopted: Option<Adopted>,
     /// Docker 日志尾随子进程
     pub tail: Option<LogTail>,
     /// 文件尾随线程的停止信号发送端 + JoinHandle：detach 时 send 再 join，
@@ -65,6 +80,7 @@ impl Runtime {
             next_attempt_at: 0,
             spec,
             live: None,
+            adopted: None,
             tail: None,
             tail_stop: None,
             tail_join: None,
@@ -73,6 +89,14 @@ impl Runtime {
             mem_mb: 0.0,
             config_ok: true,
             running_since: 0,
+        }
+    }
+
+    /// 面板"看见"的进程号：自己 spawn 的优先，其次是接管的。UI 与事件都取这个。
+    pub fn observed_pid(&self) -> Option<u32> {
+        match &self.live {
+            Some(l) => Some(l.pid),
+            None => self.adopted.as_ref().map(|a| a.pid),
         }
     }
 }

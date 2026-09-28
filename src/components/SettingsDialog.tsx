@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { save, open } from "@tauri-apps/plugin-dialog";
 import { api } from "../lib/api";
+import type { PortAudit } from "../types";
 
 interface Props {
   onClose: () => void;
@@ -13,6 +14,8 @@ export default function SettingsDialog({ onClose, onChanged }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [audit, setAudit] = useState<PortAudit[] | null>(null);
+  const [auditing, setAuditing] = useState(false);
 
   useEffect(() => {
     api
@@ -84,6 +87,18 @@ export default function SettingsDialog({ onClose, onChanged }: Props) {
     }
   };
 
+  const doAudit = async () => {
+    setError(null);
+    setAuditing(true);
+    try {
+      setAudit(await api.portAudit());
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setAuditing(false);
+    }
+  };
+
   return (
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -136,11 +151,50 @@ export default function SettingsDialog({ onClose, onChanged }: Props) {
           </button>
         </div>
 
+        <div className="section-title">端口体检</div>
+        <div
+          style={{
+            color: "var(--text-dim)",
+            fontSize: 12,
+            marginBottom: 10,
+            lineHeight: 1.6,
+          }}
+        >
+          端口占用不等于进程就是它。这里直接问内核要监听表（GetExtendedTcpTable）
+          拿到「端口 → PID → 进程名」，检查各服务声明的健康端口是不是被<strong>别的</strong>
+          进程占着——启动器 fork 出的子进程（npm 之类）算自己人，不会误报。
+        </div>
+        <div className="row">
+          <button disabled={auditing} onClick={doAudit}>
+            {auditing ? "检查中…" : "重新检查"}
+          </button>
+        </div>
+        {audit && audit.length === 0 && (
+          <div style={{ marginTop: 8, color: "var(--green)", fontSize: 13 }}>
+            没有发现端口冲突。
+          </div>
+        )}
+        {audit && audit.length > 0 && (
+          <div style={{ marginTop: 8 }}>
+            {audit.map((a) => (
+              <div className="err" key={`${a.serviceId}-${a.port}`} style={{ marginTop: 4 }}>
+                端口 {a.port} 被 {a.listenerName ?? "未知进程"}（PID{" "}
+                {a.listenerPid ?? "?"}）占用，但服务「{a.serviceName}」并未运行它
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="footer">
           <button
             className="danger"
             onClick={() => {
-              if (confirm("退出面板？被托管的服务会继续运行，只有面板程序退出。")) {
+              if (
+                confirm(
+                  "退出面板？\n\n被面板托管的进程会一并结束（Job Object 兜底，" +
+                    "防止孤儿进程占端口）。Windows 服务与 Docker 容器不受影响。"
+                )
+              ) {
                 api.quit().catch(() => {});
               }
             }}

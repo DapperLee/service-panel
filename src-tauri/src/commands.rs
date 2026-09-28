@@ -30,7 +30,7 @@ pub fn list_services(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<Servi
                 spec: rt.map(|r| r.spec.clone()).unwrap_or_default(),
                 state: rt.map(|r| r.state).unwrap_or(State::Stopped),
                 desired: rt.map(|r| r.desired).unwrap_or(Desired::Stopped),
-                pid: rt.and_then(|r| r.live.as_ref().map(|l| l.pid)),
+                pid: rt.and_then(|r| r.observed_pid()),
                 cpu: rt.map(|r| r.cpu).unwrap_or(0.0),
                 mem_mb: rt.map(|r| r.mem_mb).unwrap_or(0.0),
                 last_error: rt.and_then(|r| r.last_error.clone()),
@@ -349,4 +349,16 @@ pub async fn import_config(
     .map_err(|e| format!("任务调度失败: {e}"))??;
     crate::tray::refresh(&app2, state.inner());
     Ok(outcome)
+}
+
+/// 端口冲突体检：服务声明的 TCP/HTTP 健康端口若被**别的**进程占着，列出来。
+/// 判定考虑了启动器场景（npm 之类 fork 出真正监听的子进程），不会误报。
+#[tauri::command]
+pub async fn port_audit(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<crate::netdiag::PortAudit>, String> {
+    let st = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || crate::netdiag::audit(&st))
+        .await
+        .map_err(|e| format!("任务调度失败: {e}"))
 }

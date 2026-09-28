@@ -14,9 +14,7 @@ fn set_state(state: &Arc<AppState>, id: &str, new: State, err: Option<String>) {
             from = Some(rt.state);
             rt.state = new;
             rt.last_error = err.clone();
-            if let Some(live) = &rt.live {
-                pid = Some(live.pid);
-            }
+            pid = rt.observed_pid();
         }
     }
     state.push_state(StateEvent {
@@ -199,9 +197,12 @@ fn log_sys(state: &Arc<AppState>, id: &str, msg: &str) {
 }
 
 fn command_stop(state: &Arc<AppState>, id: &str, timeout_secs: u64) {
-    let live = {
+    let (live, adopted) = {
         let mut rts = state.runtimes.lock().unwrap();
-        rts.get_mut(id).and_then(|r| r.live.take())
+        match rts.get_mut(id) {
+            Some(r) => (r.live.take(), r.adopted.take()),
+            None => (None, None),
+        }
     };
     if let Some(mut live) = live {
         let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
@@ -224,6 +225,89 @@ fn command_stop(state: &Arc<AppState>, id: &str, timeout_secs: u64) {
         }
         // 离开作用域 -> drop(job) -> CloseHandle -> Job Object 连带回收整棵进程树
     }
+    // 接管的进程：take() 出来即与 Runtime 脱离，drop 掉 Job 句柄就由操作系统结束它，
+    // 然后等它真的从进程表里消失（拿不到 Child，只能轮询内核快照）
+    if let Some(a) = adopted {
+        let pid = a.pid;
+        drop(a);
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+        while crate::netdiag::process_alive(pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+}
+
+/// 面板重启后尝试**接管**一个本服务对应、但由面板之外启动的进程。
+///
+/// 认领要极谨慎：一旦认领，用户点「停止」就意味着我们去结束这个进程。所以要求
+/// 命令行候选唯一；若服务还声明了 TCP/HTTP 健康端口，则再用端口收窄一次。
+/// 另外必须成功挂上 KILL_ON_JOB_CLOSE 的 Job——没有这层兜底就不接管。
+pub fn try_adopt(state: &Arc<AppState>, id: &str) -> Option<u32> {
+    let spec = get_spec(state, id)?;
+    if spec.driver != DriverKind::Command {
+        return None;
+    }
+    let command = spec.command.trim().to_string();
+    if command.is_empty() {
+        return None;
+    }
+    let mut cands = crate::netdiag::find_candidates(&command, &spec.args);
+    // 只有 TCP/HTTP 型健康检查的 target 才能可靠地推出端口（命令型的 target 是 shell 串）
+    let declared_port = match spec.healthcheck.kind {
+        crate::types::HealthKind::Tcp | crate::types::HealthKind::Http => {
+            crate::netdiag::port_of(&spec.healthcheck.target)
+        }
+        _ => None,
+    };
+    if let Some(port) = declared_port {
+        // 端口没人监听 -> 服务其实没起来（或不是它占的端口），不接管
+        let listener = crate::netdiag::listener_pid(port)?;
+        cands.retain(|p| {
+            *p == listener
+                || crate::netdiag::is_descendant_of(listener, *p)
+                || crate::netdiag::is_descendant_of(*p, listener)
+        });
+    }
+    if cands.len() != 1 {
+        return None;
+    }
+    let pid = cands[0];
+
+    #[cfg(windows)]
+    let job = {
+        match crate::winjob::Job::new_kill_on_close() {
+            Ok(j) => {
+                if j.assign_pid(pid).is_err() {
+                    return None; // 挂不上就没有兜底，宁可不接管
+                }
+                Some(j)
+            }
+            Err(_) => return None,
+        }
+    };
+
+    {
+        let mut rts = state.runtimes.lock().unwrap();
+        let rt = rts.get_mut(id)?;
+        if rt.live.is_some() {
+            return None; // 已经有面板自己启动的实例，不重复认领
+        }
+        rt.adopted = Some(crate::state::Adopted {
+            pid,
+            #[cfg(windows)]
+            job,
+        });
+        rt.state = State::Running;
+        rt.desired = Desired::Running;
+        rt.running_since = chrono::Utc::now().timestamp_millis();
+    }
+    log_sys(
+        state,
+        id,
+        &format!("[panel] 接管已在运行的进程 pid={pid}（非面板启动；停止将结束该进程）"),
+    );
+    crate::logsrc::attach(state, id);
+    Some(pid)
 }
 
 fn stop_impl(state: &Arc<AppState>, id: &str) -> Result<(), String> {

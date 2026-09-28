@@ -21,7 +21,7 @@ pub enum HealthKind {
     None,
     /// TCP 端口能握手即健康
     Tcp,
-    /// HTTP GET 返回 2xx/3xx 即健康（仅 http://，localhost 场景够用）
+    /// HTTP GET 返回 2xx/3xx 即健康；支持 http:// 与 https://
     Http,
     /// 跑一条命令，退出码 0 即健康
     Command,
@@ -40,6 +40,10 @@ pub struct HealthCheck {
     /// 连续失败多少次判定为不健康
     #[serde(default = "default_threshold")]
     pub unhealthy_threshold: u32,
+    /// https 探测是否放过自签证书与域名不匹配（本地 dev 证书常需要）。
+    /// 对 http:// 无意义。
+    #[serde(default)]
+    pub tls_insecure: bool,
 }
 
 fn default_interval() -> u64 {
@@ -60,6 +64,7 @@ impl Default for HealthCheck {
             interval_secs: 10,
             timeout_secs: 3,
             unhealthy_threshold: 3,
+            tls_insecure: false,
         }
     }
 }

@@ -305,7 +305,7 @@ export default function AddServiceDialog({
             >
               <option value="none">不检查</option>
               <option value="tcp">TCP 端口</option>
-              <option value="http">HTTP</option>
+              <option value="http">HTTP / HTTPS</option>
               <option value="command">命令</option>
             </select>
           </div>
@@ -318,10 +318,33 @@ export default function AddServiceDialog({
                   healthcheck: { ...spec.healthcheck, target: e.target.value },
                 })
               }
-              placeholder="127.0.0.1:8000 或 http://localhost:8000/health"
+              placeholder="127.0.0.1:8000 或 https://localhost:8000/health"
             />
           </div>
         </div>
+        {spec.healthcheck.kind === "http" &&
+          spec.healthcheck.target.trim().toLowerCase().startsWith("https://") && (
+            <div className="field">
+              <label
+                style={{ display: "flex", alignItems: "center", gap: 6 }}
+              >
+                <input
+                  type="checkbox"
+                  style={{ width: "auto" }}
+                  checked={!!spec.healthcheck.tlsInsecure}
+                  onChange={(e) =>
+                    patch({
+                      healthcheck: {
+                        ...spec.healthcheck,
+                        tlsInsecure: e.target.checked,
+                      },
+                    })
+                  }
+                />
+                允许自签证书（本地 https 开发证书场景；会跳过证书链与域名校验）
+              </label>
+            </div>
+          )}
         <div className="row">
           <div className="field">
             <label>间隔(秒)</label>
