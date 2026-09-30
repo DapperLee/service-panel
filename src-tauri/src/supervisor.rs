@@ -24,7 +24,11 @@ pub fn spawn_supervisor(state: Arc<AppState>) {
         let mut sys = System::new_all();
         loop {
             sys.refresh_processes();
-            tick(&state, &sys);
+            // 单轮 tick 若 panic，记录后继续，绝不让监督线程死掉导致服务失去监控
+            let st = state.clone();
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                tick(&st, &sys)
+            }));
             thread::sleep(Duration::from_secs(2));
         }
     });

@@ -27,8 +27,41 @@ fn launched_by_autostart() -> bool {
     std::env::args().any(|a| a == "--autostart")
 }
 
+/// 崩溃诊断：把任何 panic 的现场（消息 + 位置 + 回溯）追加写入 panic.log，
+/// 便于排查"偶尔突然退出"（exit code 0xe0000008 一类 abort）。
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let bt = std::backtrace::Backtrace::force_capture();
+        let msg = format!(
+            "\n==== [{}] panic ====\n{info}\n---- backtrace ----\n{bt}\n",
+            chrono::Local::now().to_rfc3339()
+        );
+        eprint!("{msg}");
+        let _ = panic_log(&msg);
+    }));
+}
+
+fn panic_log_dir() -> std::path::PathBuf {
+    std::env::var_os("APPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("com.local.servicepanel")
+}
+
+fn panic_log(msg: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = panic_log_dir();
+    std::fs::create_dir_all(&dir).ok();
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("panic.log"))?;
+    f.write_all(msg.as_bytes())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_panic_hook();
     tauri::Builder::default()
         // 单实例：开机自启 + 用户手动再开时，只唤起已有窗口，不再起第二个面板
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
