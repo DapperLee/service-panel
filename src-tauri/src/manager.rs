@@ -205,12 +205,21 @@ fn command_stop(state: &Arc<AppState>, id: &str, timeout_secs: u64) {
         }
     };
     if let Some(mut live) = live {
+        #[cfg(unix)]
+        let pid = live.child.id();
         let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+
+        // unix：先向整个进程组发 SIGTERM（Linux 上子进程也会因 PDEATHSIG 感知父退出）
+        #[cfg(unix)]
+        crate::drivers::command::kill_group(pid, false);
+
         loop {
             match live.child.try_wait() {
                 Ok(Some(_)) => break,
                 Ok(None) => {
                     if Instant::now() >= deadline {
+                        #[cfg(unix)]
+                        crate::drivers::command::kill_group(pid, true);
                         let _ = live.child.kill();
                         let _ = live.child.wait();
                         break;
@@ -218,12 +227,15 @@ fn command_stop(state: &Arc<AppState>, id: &str, timeout_secs: u64) {
                     std::thread::sleep(Duration::from_millis(200));
                 }
                 Err(_) => {
+                    #[cfg(unix)]
+                    crate::drivers::command::kill_group(pid, true);
                     let _ = live.child.kill();
                     break;
                 }
             }
         }
-        // 离开作用域 -> drop(job) -> CloseHandle -> Job Object 连带回收整棵进程树
+        // Windows: 离开作用域 drop(job) -> CloseHandle -> Job Object 连带回收整棵进程树
+        // unix: 上面已 kill_group 回收；Child drop 不影响已被信号的进程
     }
     // 接管的进程：take() 出来即与 Runtime 脱离，drop 掉 Job 句柄就由操作系统结束它，
     // 然后等它真的从进程表里消失（拿不到 Child，只能轮询内核快照）

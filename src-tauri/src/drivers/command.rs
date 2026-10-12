@@ -11,6 +11,15 @@ pub use crate::winjob::Job as JobHandle;
 #[cfg(not(windows))]
 pub type JobHandle = ();
 
+/// unix：向子进程所在**进程组**发信号（负 pid），回收它派生的整棵进程树。
+/// 面板 spawn 时用 process_group(0) 让 pgid == 子进程 pid，故 kill(-pid) 命中整组。
+/// force=false 发 SIGTERM（优雅），true 发 SIGKILL（强杀）。用 /bin/kill 避免引入 libc 依赖。
+#[cfg(unix)]
+pub fn kill_group(pid: u32, force: bool) {
+    let sig = if force { "-KILL" } else { "-TERM" };
+    let _ = Command::new("kill").args([sig, &format!("-{pid}")]).status();
+}
+
 /// 已启动的托管进程
 pub struct SpawnedProc {
     pub child: Child,
@@ -67,6 +76,27 @@ pub fn spawn(
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+    }
+
+    // unix：把子进程放进独立进程组（pgid == 子进程 pid），停止时用 kill(-pgid) 回收整棵树。
+    // Linux 额外设 PDEATHSIG，面板崩溃时内核会给子进程发 SIGTERM（macOS 无此机制，见 README 说明）。
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+        #[cfg(target_os = "linux")]
+        unsafe {
+            cmd.pre_exec(|| {
+                const PR_SET_PDEATHSIG: i32 = 1;
+                const SIGTERM: i32 = 15;
+                // prctl 来自 libc，通过 extern 声明避免额外依赖
+                extern "C" {
+                    fn prctl(option: i32, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> i32;
+                }
+                let _ = prctl(PR_SET_PDEATHSIG, SIGTERM as u64, 0, 0, 0);
+                Ok(())
+            });
+        }
     }
 
     let mut child = match cmd.spawn() {

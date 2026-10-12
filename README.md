@@ -1,17 +1,39 @@
 # 本地服务管理面板 (Service Panel)
 
-一个跑在 Windows 上的桌面面板，统一管理本机 Python / Node.js / Go 服务，以及
-MySQL、Redis 等中间件（无论它们是绿色版进程、Windows 服务，还是 Docker 容器）。
-一键启动 / 停止 / 重启、实时日志、健康检查 + 崩溃自动拉起、资源监控。
+一个跨平台桌面面板（**Windows 为完整支持目标，macOS / Linux 可运行**），统一管理本机
+Python / Node.js / Go / Java / Rust 服务，以及 MySQL、Redis 等中间件（无论它们是绿色版进程、
+系统服务，还是 Docker 容器）。一键启动 / 停止 / 重启、实时日志、健康检查 + 崩溃自动拉起、
+依赖拓扑一键启停、资源监控。
 
 技术栈：**Tauri 2 (Rust) + React 18 + TypeScript + SQLite**。
 
+## 平台支持
+
+| 能力 | Windows | Linux | macOS |
+|---|---|---|---|
+| 命令行进程托管（Python/Node/Go/Java/Rust/exe） | ✅ | ✅ | ✅ |
+| 实时日志 / 健康检查 / 依赖拓扑 / 分组一键启停 | ✅ | ✅ | ✅ |
+| 托盘常驻 / 开机自启 / 单实例 / SQLite | ✅ | ✅ | ✅ |
+| Docker 容器驱动 | ✅ | ✅ | ✅ |
+| **进程树回收**（关服务不留孤儿） | ✅ Job Object | ✅ 进程组 + PDEATHSIG | ⚠️ 进程组（停止时回收整组；**崩溃时**无 PDEATHSIG，可能残留，见下） |
+| **系统服务驱动** | ✅ sc | ✅ systemctl | ⚠️ launchctl（best-effort） |
+| **密钥加密**（env 里的密码/key） | ✅ DPAPI | 明文存 SQLite | 明文存 SQLite |
+
+说明：
+- **Linux/macOS 分支无法在 Windows 开发机上编译验证**（`cfg(unix)` 代码不参与 Windows 编译，
+  交叉 check 又被 `rusqlite` bundled 的 C 交叉工具链卡住）。首次在真机 linux/mac 上请跑
+  `cargo build` 验证，尤其 macOS 的 launchctl 与崩溃残留回收这两处。
+- 密钥在 mac/linux 上按你的决定**用明文文件**（不引入 keyring）；如需加密可后续换 `keyring`+AES-GCM。
+- Linux 上管理系统级服务需 root/sudo（`systemctl start xxx`）；用户级服务可改用 `systemctl --user`。
+- macOS 无 `PR_SET_PDEATHSIG`，面板异常崩溃时其托管的子进程可能不被回收（正常"停止"操作会 kill 整个进程组，不受影响）。
+
 ## 环境要求
 
-- Rust（stable，MSVC 工具链）——`rusqlite` 用 `bundled`，需要可用的 C 编译器/linker
+- Rust（stable）——`rusqlite` 用 `bundled`，需要可用的 C 编译器/linker
+  - Windows：MSVC Build Tools（装 Rust 时选 `x86_64-pc-windows-msvc` 一般已就绪）
+  - macOS：`xcode-select --install`；Linux：`build-essential`/`gcc` + `webkit2gtk` 等 Tauri 依赖
 - Node.js 18+（自带 npm 即可，本项目用 npm）
-- Windows：MSVC Build Tools（装 Rust 时选 `x86_64-pc-windows-msvc` 一般已就绪）
-- 管理 Windows 服务需要**管理员权限**；需要以管理员运行面板
+- 管理 Windows 服务需要**管理员权限**；Linux 系统服务需要 sudo
 
 ## 开发运行
 
@@ -142,8 +164,8 @@ service-panel/
 - 加密失败时降级为明文（不阻断使用）。
 - 注意：DPAPI 是机器+用户绑定的，`panel.db` 拷到别的机器/换 Windows 用户会解不开——
   跨机迁移请在新机重新配置，别指望直接拷库。
-- 平台限定：本项目按 Windows 单平台设计（DPAPI + Job Object）。若要出 Mac/Linux 版，
-  需把加密换成 `keyring`+AES-GCM、进程树回收换成 `setpgid`/`kill(-pgid)`。
+- 跨平台：加密仅 Windows 走 DPAPI；**macOS / Linux 上 spec_json 以明文存 SQLite**（按产品决定，
+  不引入 keyring）。进程树回收与系统服务驱动已做跨平台分派（见「平台支持」表）。
 
 ## 配置导出 / 导入（跨机迁移通道）
 
