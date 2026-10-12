@@ -13,3 +13,5 @@ logs/
 .idea
 .vscode
 *.log
+# 内部备忘（跨平台风险，不随仓库分发）
+docs/KNOWN_ISSUES.md

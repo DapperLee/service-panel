@@ -1,256 +1,125 @@
-# 本地服务管理面板 (Service Panel)
+# Service Panel · 本地服务管理面板
 
-一个跨平台桌面面板（**Windows 为完整支持目标，macOS / Linux 可运行**），统一管理本机
-Python / Node.js / Go / Java / Rust 服务，以及 MySQL、Redis 等中间件（无论它们是绿色版进程、
-系统服务，还是 Docker 容器）。一键启动 / 停止 / 重启、实时日志、健康检查 + 崩溃自动拉起、
-依赖拓扑一键启停、资源监控。
+一个桌面小工具，把你本机所有开发服务和中间件（Python / Node / Go / Java / Rust 进程，MySQL / Redis，Docker 容器）集中到一个面板里，一键启动 / 停止 / 重启，看实时日志，崩溃自动拉起。**解决"每次开机要一个个手动开服务"的麻烦。**
 
-技术栈：**Tauri 2 (Rust) + React 18 + TypeScript + SQLite**。
+---
 
-## 平台支持
+## 效果预览
 
-| 能力 | Windows | Linux | macOS |
-|---|---|---|---|
-| 命令行进程托管（Python/Node/Go/Java/Rust/exe） | ✅ | ✅ | ✅ |
-| 实时日志 / 健康检查 / 依赖拓扑 / 分组一键启停 | ✅ | ✅ | ✅ |
-| 托盘常驻 / 开机自启 / 单实例 / SQLite | ✅ | ✅ | ✅ |
-| Docker 容器驱动 | ✅ | ✅ | ✅ |
-| **进程树回收**（关服务不留孤儿） | ✅ Job Object | ✅ 进程组 + PDEATHSIG | ⚠️ 进程组（停止时回收整组；**崩溃时**无 PDEATHSIG，可能残留，见下） |
-| **系统服务驱动** | ✅ sc | ✅ systemctl | ⚠️ launchctl（best-effort） |
-| **密钥加密**（env 里的密码/key） | ✅ DPAPI | 明文存 SQLite | 明文存 SQLite |
+> 把运行截图放到 `docs/preview.png` 后取消下面这行的注释即可。
 
-说明：
-- **Linux/macOS 分支无法在 Windows 开发机上编译验证**（`cfg(unix)` 代码不参与 Windows 编译，
-  交叉 check 又被 `rusqlite` bundled 的 C 交叉工具链卡住）。首次在真机 linux/mac 上请跑
-  `cargo build` 验证，尤其 macOS 的 launchctl 与崩溃残留回收这两处。
-- 密钥在 mac/linux 上按你的决定**用明文文件**（不引入 keyring）；如需加密可后续换 `keyring`+AES-GCM。
-- Linux 上管理系统级服务需 root/sudo（`systemctl start xxx`）；用户级服务可改用 `systemctl --user`。
-- macOS 无 `PR_SET_PDEATHSIG`，面板异常崩溃时其托管的子进程可能不被回收（正常"停止"操作会 kill 整个进程组，不受影响）。
+<!-- ![预览](docs/preview.png) -->
 
-## 环境要求
+界面：卡片式服务列表（状态灯 + CPU/内存）、右侧实时日志栏、分组标签栏与依赖图、系统托盘菜单。
 
-- Rust（stable）——`rusqlite` 用 `bundled`，需要可用的 C 编译器/linker
-  - Windows：MSVC Build Tools（装 Rust 时选 `x86_64-pc-windows-msvc` 一般已就绪）
-  - macOS：`xcode-select --install`；Linux：`build-essential`/`gcc` + `webkit2gtk` 等 Tauri 依赖
-- Node.js 18+（自带 npm 即可，本项目用 npm）
-- 管理 Windows 服务需要**管理员权限**；Linux 系统服务需要 sudo
+---
 
-## 开发运行
+## 快速开始
 
 ```bash
-cd service-panel
-npm install --registry=https://registry.npmmirror.com   # 国内网络建议用镜像源
-npm run tauri dev    # 首次会编译 Rust，较慢；之后热更新
-```
+# 1) 安装依赖（国内网络建议用镜像源）
+npm install --registry=https://registry.npmmirror.com
 
-前端 dev 端口固定为 **5273**（在 `vite.config.ts` 和 `src-tauri/tauri.conf.json`
-的 `devUrl` 两处，改端口要同时改）。故意不用 vite 默认的 5173，避免和你机器上
-其它项目的 dev server 撞端口。
+# 2) 开发运行（首次会编译 Rust，较慢）
+npm run tauri dev
 
-## 以管理员运行（管 Windows 服务需要）
-
-管理 Windows 服务（`sc start/stop`）需要管理员权限，否则会报错误码 5。分两种情况：
-
-- **开发模式（`npm run tauri dev`）**：**不要点应用内的"以管理员重启"按钮**。
-  该按钮会用管理员身份裸启动 debug 版 exe，而 debug 版加载的是 vite 的 `localhost:5273`，
-  裸启时 vite 已随旧实例退出而停掉，会白屏报 `ERR_CONNECTION_REFUSED`（代码里已加守卫，
-  开发版点它会直接提示改用管理员终端）。
-  正确做法：用**管理员终端**跑整条 dev 命令——
-  1. 开始菜单搜「终端 / PowerShell」→ 右键「以管理员身份运行」；
-  2. `cd D:\code\develop\gx\mianban\service-panel` 然后 `npm run tauri dev`。
-  这样 vite 和 exe 都在提权环境里。
-
-- **生产模式（`npm run tauri build` 打包安装后）**：前端资源已内嵌进 exe，不依赖 dev server。
-  此时点顶栏提权横幅里的「以管理员重启」按钮即可正常弹 UAC 提权重启；
-  或右键 exe「以管理员身份运行」。开机自启项若需管理员，请在任务计划程序里勾选"使用最高权限运行"。
-
-## 常见报错
-
-- **`Port 5173 is already in use` / `beforeDevCommand terminated`**
-  本项目已改用 5273。若 5273 也被占，把 `vite.config.ts` 的 `port` 和
-  `tauri.conf.json` 的 `devUrl` 一起换成另一个空闲端口即可。
-
-- **`npm install` 卡住不动**
-  默认 `registry.npmjs.org` 在部分网络下很慢或不通，用镜像源：
-  `npm install --registry=https://registry.npmmirror.com`。
-
-- **esbuild 报 `install scripts blocked` / vite 起不来提示 esbuild 二进制缺失**
-  安全策略会拦 postinstall，批准并重建即可：
-  `npm install-scripts approve esbuild && npm rebuild esbuild`。
-
-- **首次 `cargo build` 很慢**
-  正常，要下 ~400 个 crate 并编译 bundled SQLite，之后走缓存就快了。
-
-- **管理 Windows 服务时 `sc start` 报权限错误（错误码 5）**
-  需要管理员权限，见上方「以管理员运行」一节：开发模式用管理员终端跑 `npm run tauri dev`，
-  生产模式用应用内「以管理员重启」或右键 exe 提权运行。
-
-## 打包发布
-
-```bash
+# 3) 打包安装包（产物在 src-tauri/target/release/bundle/）
 npm run tauri build
-# 产物在 src-tauri/target/release/bundle/
 ```
 
-图标占位文件已生成在 `src-tauri/icons/`，要换自己的 logo：
-把源图放好后运行 `npm run tauri icon <你的.png>`，或 `node scripts/gen_icons.mjs`。
+环境要求：**Rust（stable）+ Node.js 18+**。Windows 需 MSVC Build Tools；macOS 需 `xcode-select --install`；Linux 需 `build-essential` 与 Tauri 的 `webkit2gtk` 等系统依赖。
+
+---
+
+## 功能特性
+
+- **三类服务统一管理**：命令行进程、系统服务（Windows 服务 / systemd / launchd）、Docker 容器，一套界面。
+- **可靠启停**：停止时回收整棵进程树（Windows 用 Job Object，Linux/macOS 用进程组），不留孤儿进程占端口。
+- **健康检查 + 崩溃自愈**：TCP/HTTP/命令探活，异常按指数退避自动重启，用户手动停止不会被误拉起。
+- **依赖拓扑一键启停**：给服务设依赖，分组按拓扑顺序"起一个、等它健康再起下一个"，停止逆序，并有 SVG 依赖图可视化。
+- **开机自启 + 托盘常驻**：登录后台自启、按依赖拉起勾选的服务；关闭窗口收进托盘。
+- **实时日志与观测**：stdout/stderr/Docker/文件尾随统一展示，支持关键字过滤、自动编码（UTF-8/GBK）、事件时间线、资源占用。
+
+---
+
+## 使用示例
+
+在面板「+ 添加服务」里按下表填（类型都是"命令行进程"）：
+
+| 场景 | 启动命令 | 参数 | 工作目录 | 健康检查 |
+|---|---|---|---|---|
+| Node 前端 | `npm` | `run dev` | 前端项目根 | HTTP `http://localhost:5173` |
+| Java jar | `java` | `-jar target/app.jar` | jar 上级目录 | TCP `127.0.0.1:8080` |
+| Python (conda) | `C:\...\envs\myenv\python.exe` | `-m uvicorn app.main:app --port 8000` | 项目根 | TCP `127.0.0.1:8000` |
+| Rust 编译产物 | `D:\path\target\release\myapp.exe` | （空） | exe 目录 | 按需 |
+| Docker 容器 | 类型选 Docker | 容器名 `mysql-dev` | — | 自动 |
+
+要点：conda 环境**别用 `conda activate`**，直接用该环境的 `python.exe` 绝对路径；`npm`/`java` 这类在 Windows 上是 `.cmd`，面板会自动回退 `cmd /C` 执行。
+
+---
+
+## 技术栈
+
+| 层 | 选型 |
+|---|---|
+| 桌面框架 | Tauri 2（Rust 后端 + 系统 WebView） |
+| 前端 | React 18 + TypeScript + Vite 5 |
+| 存储 | SQLite（`rusqlite`，bundled） |
+| 进程/系统 | 原生 `std::process` + Windows Job Object / unix 进程组；`sysinfo` 采资源 |
+| 关键库 | `chrono` `uuid` `encoding_rs` `base64`；插件 `autostart` `single-instance` `dialog` |
+
+配置与数据存放：`%APPDATA%\com.local.servicepanel\`（Windows）下 `data/panel.db` 与 `logs/<服务id>/*.log`。
+
+---
 
 ## 目录结构
 
 ```
 service-panel/
-  src/                     React 前端
-    App.tsx                主布局 + 事件订阅 + 轮询
-    types.ts               与 Rust 对齐的类型
-    lib/api.ts             invoke 封装 + 事件监听
-    lib/deps.ts            依赖拓扑分层 + 环检测（供依赖图）
-    components/            ServiceCard / LogConsole / AddServiceDialog
-                           GroupManagerDialog / SettingsDialog / DependencyGraph
-  src-tauri/               Rust 后端
-    src/
-      types.rs             领域类型（ServiceSpec / State / 重启策略…）
-      db.rs                SQLite 迁移与仓储
-      drivers/             驱动抽象
-        command.rs         CommandDriver + Windows Job Object（进程树回收）
-        winservice.rs      Windows 服务（sc start/stop/query）
-        docker.rs          Docker（docker start/stop/inspect）
-      logs.rs              日志读取线程 + 落盘 + 前端广播
-      logsrc.rs            外部服务日志接入（docker logs -f / 文件尾随）
-      health.rs            TCP / HTTP / 命令 健康检查
-      state.rs             AppState / Runtime 状态机
-      manager.rs           start / stop / restart 编排 + 生命周期互斥锁
-      group.rs             分组拓扑排序（Kahn）+ 按序启停编排
-      supervisor.rs        后台监督线程：崩溃检测、健康、重启退避、资源采样
-      secrets.rs           配置密文存储（Windows DPAPI）
-      export.rs            配置导出/导入（明文 JSON，跨机迁移通道）
-      winjob.rs            Job Object 共享封装（托管进程 + docker 尾随进程复用）
-      tray.rs              系统托盘（菜单、动态刷新、事件）
-      commands.rs          暴露给前端的 Tauri Command
-      lib.rs               装配（插件注册、注入 emitter、启动监督、注册命令）
-  scripts/gen_icons.mjs    零依赖生成占位图标
+  src/                 React 前端
+    App.tsx            主布局 + 事件订阅 + 轮询
+    types.ts           与 Rust 对齐的类型
+    lib/               api（invoke/事件）、deps（拓扑）
+    components/        ServiceCard / LogConsole / AddServiceDialog
+                       GroupManagerDialog / SettingsDialog / DependencyGraph / EventsDialog
+  src-tauri/src/       Rust 后端
+    drivers/           command / winservice(systemd·launchd·sc) / docker
+    manager.rs         启停编排 + 生命周期互斥锁
+    supervisor.rs      监督线程：崩溃检测、健康、重启退避、资源采样
+    group.rs           分组拓扑排序（Kahn）+ 按序启停
+    health.rs          TCP / HTTP / 命令 健康检查
+    logs.rs / logsrc.rs 日志管线与外部服务日志接入
+    secrets.rs         配置加密（Windows DPAPI，其它平台明文）
+    winjob.rs / elevate.rs  Windows 专属：Job Object、提权探测
+    commands.rs / lib.rs   Tauri 命令与装配
+  scripts/gen_icons.mjs  生成占位图标
+  docs/PUBLISH.md      发布与 Git 工作流教程
 ```
 
-## 当前骨架已完成 / 待办
+---
 
-已完成（M1–M5）+ 增强：三类驱动、Command 托管（含 Job Object 进程树回收）、实时日志流、
-状态机 + 期望态分离、健康检查、指数退避自动重启、资源采样、SQLite 持久化、
-添加/编辑向导 UI、全部启停、事件时间线接口。
-**M4 新增**：开机自启（`tauri-plugin-autostart`）、单实例锁（`tauri-plugin-single-instance`）、
-系统托盘常驻（左键切换窗口、右键菜单逐服务启停/全部启停/退出）、关闭窗口最小化到托盘、
-设置面板的开机自启开关。
-**M5 新增**：分组一键启停 + 依赖拓扑排序（`group.rs` 用 Kahn 算法按 `spec.after` 边定序并检测循环依赖）；
-组内启动按拓扑顺序逐个"启动 + 就绪等待（TCP/HTTP 健康探通）"再启下一个，任一步失败即中断整条链并经
-`group://result` 事件回报；停止按逆序（先起的后停）。"全部启动/停止"也走全局拓扑定序。
-前端加分组标签栏、本组启停按钮、分组管理弹窗、服务归属分组下拉。
+## 配置说明
 
-下一步（可选增强）：
-- HTTP 健康检查支持 https；`sc`/`docker` 输出的多语言解析加固
-- 资源历史曲线（**评估后暂缓**：个人本机工具 ROI 低，长期监控更适合 Prometheus+Grafana；
-  实时数值 + 日志 + 自动重启已覆盖"当前是否健康"）
+**每个服务（spec）**：`driver`（command/windows_service/docker）、`command` + `args` + `cwd` + `env`、`encoding`（auto/utf-8/gbk）、`stopTimeoutSecs`（优雅停止超时）、`healthcheck`（kind + target + interval + 失败阈值）、`restartPolicy`（never/on_failure/always + 最大重试 + 退避基数）、`after`（依赖的服务 id）、`logPath`（尾随的外部日志文件）。
 
-## 依赖关系图
+**全局**：开机自启（设置里开关）；前端 dev 端口固定 `5273`（`vite.config.ts` 与 `tauri.conf.json` 两处，改端口要同时改）；日志保留 7 天、单文件 20MB 滚动；事件表保留 7 天 / 上限 5000 行。
 
-- 纯前端 SVG，无第三方图论/图表库：`lib/deps.ts` 用 Kahn 拓扑 + 最长路径给服务分层，
-  `components/DependencyGraph.tsx` 按层排布、贝塞尔箭头连线（方向 = 启动先后，被依赖 → 依赖方）。
-- 环检测：无法入队的节点即陷入循环依赖，红框 + 红色连线 + 顶部告警标出。
-- 与分组联动：在某个分组标签下点「依赖图」只看该组；「全部」看全局。节点带实时状态圆点。
-- 数据源就是服务里勾选的「依赖服务」（`spec.after`），和"本组启动"用的是同一套拓扑，所见即所跑。
+---
 
-## 环境密钥加密存储
+## 常见问题 FAQ
 
-- 整条 `spec_json`（含 env 里的 DB 密码、API key）写库前用 **Windows DPAPI（CryptProtectData）**
-  加密，密文与「当前用户 + 本机」绑定，无需外部密钥文件；读取时解密。
-- 带 `enc:` 前缀自描述，**兼容旧明文记录**（无前缀按明文解析，下次保存自动升级为加密）。
-- 加密失败时降级为明文（不阻断使用）。
-- 注意：DPAPI 是机器+用户绑定的，`panel.db` 拷到别的机器/换 Windows 用户会解不开——
-  跨机迁移请在新机重新配置，别指望直接拷库。
-- 跨平台：加密仅 Windows 走 DPAPI；**macOS / Linux 上 spec_json 以明文存 SQLite**（按产品决定，
-  不引入 keyring）。进程树回收与系统服务驱动已做跨平台分派（见「平台支持」表）。
+- **端口 5173/5273 被占用**：本项目用 5273；仍冲突就同时改 `vite.config.ts` 的 `port` 和 `tauri.conf.json` 的 `devUrl`。
+- **`npm install` 卡住 / esbuild 报错**：用镜像源 `--registry=https://registry.npmmirror.com`；esbuild 被拦时 `npm install-scripts approve esbuild && npm rebuild esbuild`。
+- **Tauri 版本 mismatch**：`@tauri-apps/api`/`cli` 的 minor 必须和 Rust `tauri` crate 一致，别只升一边。
+- **管 Windows 服务报权限错误码 5**：需管理员。开发模式用**管理员终端**跑 `npm run tauri dev`（别点应用内"以管理员重启"，那是给打包版用的）；详见 `docs/PUBLISH.md` 与设置面板提示。
+- **工作目录带空格导致 `os error 267`**：已自动 trim 命令/参数/目录首尾空格。
+- **Python 日志中文乱码**：输出编码选"自动"，或给服务加环境变量 `PYTHONUTF8=1`。
+- **conda 服务起不来**：不要用 `conda activate`，直接用环境里的 `python.exe` 绝对路径。
+- **偶尔突然退出（exit code 0xe0000008）**：崩溃现场已写入 `%APPDATA%\com.local.servicepanel\panic.log`，看它定位真因。
+- **跨平台**：核心功能三平台可用；Windows 为完整支持目标，Linux/macOS 的进程树回收与服务驱动为跨平台实现（首次请在真机 `cargo build` 验证）。
 
-## 配置导出 / 导入（跨机迁移通道）
+---
 
-- 设置面板 →「配置备份」→ 导出/导入。走原生文件对话框（`tauri-plugin-dialog`）。
-- 导出文件是**明文 JSON**（`version / exportedAt / appVersion / groups / services`），
-  含服务定义、分组、依赖关系与 env 密钥——请像对待密码管理器一样保管它。
-- 导入两种模式：
-  - **合并**：保留现有配置，只添加文件中不存在的 id（同 id 跳过）。
-  - **覆盖**：先停所有正在运行的服务、清空 services/groups/events 三张表，再按文件重建。
-- 导入走后台线程（覆盖模式要挨个优雅停，可能耗时），完成后自动刷新托盘。
-- 为什么需要它：DPAPI 是**机器+用户绑定**的，`panel.db` 直接拷到别的电脑或换用户登录
-  都解不开。跨机迁移、备份恢复、换硬件，全靠这个"导出（解密）→ 拷 JSON → 导入（重新加密入库）"通道。
+## 许可
 
-## Windows 服务 / Docker 日志接入
-
-- Docker：服务运行时自动 spawn `docker logs -f --tail 200` 作为尾随子进程，复用同一套
-  日志管线（UI 广播 + 本地落盘）。该子进程挂在 Job Object 上，面板退出即被回收，不留孤儿。
-- Windows 服务：无标准输出，改为尾随服务写的日志文件——在服务的"日志文件路径"里填
-  该文件绝对路径（如 MySQL 的 `mysqld.err`）。首次只回看最后 ~64KB，之后每 500ms 增量读取，
-  支持文件轮转（size 变小则重置偏移）。推进偏移用的是**实际读到的字节数**而不是 metadata 的
-  大小——否则读取期间文件又涨了一截，下一轮会从那截之前重新 seek，把已读过的尾部再推一遍。
-- 命令型服务：主输出仍走 stdout/stderr 管道；若额外填了"日志文件路径"，会并行尾随该文件。
-- 启停联动：`manager::start` 成功后 `logsrc::attach`，`stop`/`remove` 及监督线程检测到
-  外部服务未运行时 `logsrc::detach`；面板重启接管时若外部服务已在运行也会挂上日志源。
-
-## 体验优化（持续）
-
-- 启停/重启/删除改为 `async` + `spawn_blocking`，重活离开主线程，界面不再因等待而发木。
-- 每服务生命周期操作互斥锁（`AppState.ops` + RAII `OpGuard`）：异步化后防止双击重复
-  起进程，也让监督线程的自动重启不与用户操作打架；重启失败会重新排期而非卡死。
-- 日志栏支持关键字过滤 + 按 stdout/stderr/系统 流过滤、匹配计数、一键复制当前视图。
-- 输出编码支持"自动"（UTF-8 优先、回退 GBK），解决中文 Windows 下 Python 日志乱码。
-- 命令/参数/工作目录启动前统一 `trim()`，避免复制粘贴带空格导致 `os error 267`。
-- Command 驱动在 Windows 上找不到程序时自动回退 `cmd /C`，`npm`/`conda` 等 .cmd 可直接跑。
-
-## 健壮性加固（代码审查后修复）
-
-- **健康探测不再挂死**：HTTP 探测连接/写/读全部带超时（此前只连不设读超时，
-  "接受连接但永不回包"的服务会永久卡住）；命令型探测改为带超时的 spawn+轮询+超时 kill。
-- **监督线程不再持锁做 I/O**：`tick` 拆成三段——锁内只做资源采样与 Command `try_wait`
-  （非阻塞），外部状态查询（sc/docker）与健康探测收集为任务，**锁外并行**跑（`thread::scope`），
-  再回锁应用结果。此前一次慢 `docker inspect` 或挂死的 HTTP 探测会卡住整把 runtimes 锁，
-  连带堵死 list_services、托盘刷新、所有启停。
-- **配置损坏不再静默清空备份**：`unpack_spec` 解密/解析失败会标记 `config_ok=false` 并在卡片
-  显示告警；导出前检测到坏行会**中止导出**，避免把空 spec 当真实配置写进备份。
-- **Windows 服务停止按异步处理**：`sc stop` 返回后轮询 `STATE` 直到真正 STOPPED（或超时），
-  不再立刻置 Stopped 导致用户点启动撞 1056/1062（MySQL 这类要十几秒停的服务尤为关键）。
-- **sc 输出解析 locale 无关**：状态判定改为从原始字节里抽 `STATE` 后的数字码（RUNNING=4/STOPPED=1），
-  不再依赖 `contains("4")` 这种会被其它数字误命中的脆弱判断；错误信息按 GBK 解码。
-
-### 第二轮加固（性能与自愈）
-
-- **轮询不再重复解密**：`list_services` 改为静态列走 DB、spec 与动态状态走内存 `Runtime`（启动时解密一次并缓存），
-  去掉每 2.5s 对全部服务做一次 DPAPI 解密的开销。
-- **日志批量传输**：后端按 80ms 聚合成数组一次 `emit("log://batch")`，前端一批只 setState 一次；
-  日志栏只渲染最后 800 行。话痨服务（Vite/Python 循环）不再造成每秒上千次 IPC + 数组拷贝 + 重渲染。
-- **重试计数自愈**：启动成功对所有驱动重置 `fail_streak`；稳定运行超 30s 自动清零；
-  超过 `max_retries` 不再永久放弃，而是进入 5 分钟冷却后继续重试（补齐设计文档"最大重试 + 冷却"）。
-- **进程树采样含孙进程**：每 tick 建一次 parent→children 映射做 BFS，Node/pm2 的 worker 不再被漏算。
-- **分组批量启停互斥 + 进度**：`group_ops` 集合防止连点起多条链抢锁；逐服务推 `group://progress`
-  事件，前端 toast 显示"启动中 2/5 · 服务名"，不再一条链静默最多 45 秒。
-
-### 第三轮加固（可观测性、磁盘、权限、测试）
-
-- **事件时间线有界面了**：顶栏「时间线」打开 `EventsDialog`，展示最近状态变化的 `从→到 + 原因 + 退出码`；
-  `StateEvent` 补 `from` 字段，`set_state` 记录来源状态（此前恒为 None）。
-- **日志与事件不再只涨不删**：日志按天 + 20MB 双维度滚动（`rotate_if_oversized`），启动按 7 天保留清理
-  （`cleanup_old_logs`）；`service_events` 启动清理 + 每 500 条增量清理（`prune_events`，7 天 / 上限 5000 行）。
-- **提权探测**：`elevate.rs` 用 token 的 `TokenElevation` 判断是否管理员；非管理员时顶栏下方黄色横幅 +
-  「以管理员重启」按钮（PowerShell `Start-Process -Verb RunAs` 触发 UAC 后退出当前实例）。
-- **DB 迁移加版本阶梯**：`PRAGMA user_version` 驱动的 `migrate`，加列/改表不再静默失效；v2 删除了
-  只写不读的死列 `groups.start_order`。
-- **死代码清理**：移除 `spawn_supervisor` 一进来就被排空、发送端当场 drop 的 `autostart_rx`。
-- **单元测试**：`topo_order`（线性/环/非成员边/自环）、`logs::decode`（utf8/gbk/auto）、
-  `health::parse_status_line`、`secrets` 前缀兼容——12 个纯逻辑用例，`cargo test` 全绿。
-- 项目已纳入 git 版本管理。
-
-## 关键设计点
-
-- **Job Object（KILL_ON_JOB_CLOSE）**：面板崩溃或被强杀时，被托管的进程树由操作系统
-  回收，不会遗留孤儿进程占用端口。这是自研面板相对普通脚本的核心价值。
-- **期望态 vs 真实态分离**：`desired` 与 `state` 分开存，保证用户手动停止的服务不会被
-  重启策略又拉起来。
-- **重启退避**：`base * 2^attempt`，上限 60s，配合 `max_retries` 防止无限重启风暴。
-- **每服务只有一个日志写入端**（`Runtime.sink`，`logs::LogSink`）：按天与按字节滚动都在
-  **写路径上**判，而这只有在"同一时刻单个句柄"下才安全（Windows 上有并发句柄时重命名会
-  因共享冲突失败，也没法准确累计字节）。所以不要再为了写一行日志去 `open` 一个新文件——
-  那样滚动会静默失效，长跑的服务照样能写出几 GB 的单文件。
+MIT（可按需调整）。
