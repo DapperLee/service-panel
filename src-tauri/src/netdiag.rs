@@ -25,12 +25,14 @@ pub struct Listener {
 
 /// 端口字节序转换：DWORD 低位那个 WORD 是网络序的端口。
 /// 例：80 -> 网络序字节 00 50 -> 落在小端 WORD 里是 0x5000 -> from_be 还原成 80。
+#[cfg_attr(not(windows), allow(dead_code))] // 仅 Windows FFI 路径与单元测试使用
 fn port_from_raw(raw: u32) -> u16 {
     u16::from_be((raw & 0xFFFF) as u16)
 }
 
 /// IPv4 地址转换：DWORD 里按网络序存放，小端机器上第 1 个八位组在最低字节。
 /// 例：127.0.0.1 -> 0x0100_007F。Windows 只有小端，这里不处理大端。
+#[cfg_attr(not(windows), allow(dead_code))]
 fn ipv4_from_raw(raw: u32) -> Ipv4Addr {
     let b = raw.to_le_bytes();
     Ipv4Addr::new(b[0], b[1], b[2], b[3])
