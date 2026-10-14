@@ -5,11 +5,9 @@ use std::process::{Child, Command, Stdio};
 #[cfg(windows)]
 use crate::winjob::Job;
 
-/// 对外暴露 Job 句柄类型（供 state.rs 的 LiveProc 使用）
+/// 对外暴露 Job 句柄类型（供 state.rs 的 LiveProc 使用；仅 Windows 路径引用）
 #[cfg(windows)]
 pub use crate::winjob::Job as JobHandle;
-#[cfg(not(windows))]
-pub type JobHandle = ();
 
 /// unix：向子进程所在**进程组**发信号（负 pid），回收它派生的整棵进程树。
 /// 面板 spawn 时用 process_group(0) 让 pgid == 子进程 pid，故 kill(-pid) 命中整组。

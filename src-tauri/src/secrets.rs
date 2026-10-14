@@ -1,6 +1,8 @@
 //! 配置密文存储：Windows 上用 DPAPI（CryptProtectData）加密整条 spec_json，
 //! 密文与「当前用户 + 本机」绑定，无需外部密钥文件。带 `enc:` 前缀自描述，
 //! 无前缀视为明文（兼容旧记录，下次保存自动升级为加密）。
+// base64 只在 Windows 的 DPAPI 密文路径里用到，非 Windows 全走明文，别拉进 unix 编译
+#[cfg(windows)]
 use base64::{engine::general_purpose::STANDARD, Engine};
 
 const PREFIX: &str = "enc:";
