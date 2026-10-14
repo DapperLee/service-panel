@@ -284,6 +284,24 @@ mod imp {
         s.lines().any(|l| l.trim().starts_with("state = running"))
     }
 
+    /// `launchctl print-disabled <dom>` 输出里查该 label 是否被禁用。
+    /// disabled 服务的 bootstrap 报 `Bootstrap failed: 5: Input/output error`，
+    /// 报错文本不含 "disabled" 字样，只能查这张表确认（E6 场景）。
+    fn launchd_disabled(label: &str) -> bool {
+        Command::new("launchctl")
+            .args(["print-disabled", &domain()])
+            .output()
+            .map(|o| {
+                let s = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                );
+                s.contains(&format!("\"{label}\" => disabled"))
+            })
+            .unwrap_or(false)
+    }
+
     pub fn start(service_name: &str) -> Result<(), String> {
         let dom = domain();
         let target = format!("{dom}/{service_name}");
@@ -297,16 +315,27 @@ mod imp {
                          若它是系统域 LaunchDaemon，本面板不支持免提权管理"
                     )
                 })?;
-                // 已 bootstrap 过的 job 再 bootstrap 会报 already，忽略错误继续 kickstart
-                let _ = run(&["bootstrap", &dom, &plist]);
-                run(&["kickstart", &target]).map_err(|e2| {
-                    if e2.contains("disabled") {
-                        format!("{e2}（该服务被禁用，先执行: launchctl enable {target}）")
-                    } else {
-                        e2
+                // bootstrap 失败必须接住：disabled 服务的真实死因在这里
+                // （"Bootstrap failed: 5: Input/output error"，不含 "disabled" 字样），
+                // 吞掉就只剩 kickstart 的 "Could not find service"，没法给用户提示
+                let boot_err = run(&["bootstrap", &dom, &plist]).err();
+                match run(&["kickstart", &target]) {
+                    Ok(_) => Ok(()),
+                    Err(e2) if e2.contains("disabled") => Err(format!(
+                        "{e2}（该服务被禁用，先执行: launchctl enable {target}）"
+                    )),
+                    // kickstart 报错不带 "disabled"，但 launchd 禁用表里有它：E6 场景
+                    Err(_) if launchd_disabled(service_name) => {
+                        let why = boot_err.as_deref().unwrap_or("kickstart 被拒");
+                        Err(format!(
+                            "启动失败：{service_name} 已被 launchd 禁用（{why}）；\
+                             先执行: launchctl enable {target} 再启动"
+                        ))
                     }
-                })?;
-                Ok(())
+                    // bootstrap 的报错（plist 路径/格式问题）比 kickstart 的
+                    // "Could not find service" 更有定位价值
+                    Err(e2) => Err(boot_err.unwrap_or(e2)),
+                }
             }
             Err(e) => Err(e),
         }
