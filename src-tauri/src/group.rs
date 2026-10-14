@@ -191,16 +191,26 @@ fn run_start(app: &AppHandle, state: &Arc<AppState>, ordered: &[String], group: 
     let specs = spec_map(state);
     let names = names_of(state);
     let total = ordered.len();
+    // 失败/被跳过的服务 id（下游依赖到就跳过）；用于"一个失败不拖垮全部"
+    let mut blocked: HashSet<String> = HashSet::new();
+    let mut failed: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+
     for (i, id) in ordered.iter().enumerate() {
-        emit_progress(
-            app,
-            group,
-            "start",
-            id,
-            names.get(id).map(|s| s.as_str()).unwrap_or(id),
-            i + 1,
-            total,
-        );
+        let name = names.get(id).cloned().unwrap_or_else(|| id.clone());
+        emit_progress(app, group, "start", id, &name, i + 1, total);
+
+        // 依赖里有失败/被跳过的服务 -> 跳过本服务（它注定起不来），但不影响无依赖关系的其它服务
+        let dep_broken = specs
+            .get(id)
+            .map(|s| s.after.iter().any(|d| blocked.contains(d)))
+            .unwrap_or(false);
+        if dep_broken {
+            skipped.push(name);
+            blocked.insert(id.clone());
+            continue;
+        }
+
         let already = {
             let rts = state.runtimes.lock().unwrap();
             matches!(
@@ -208,42 +218,70 @@ fn run_start(app: &AppHandle, state: &Arc<AppState>, ordered: &[String], group: 
                 Some(State::Running | State::Starting | State::Restarting)
             )
         };
+
+        let mut err: Option<String> = None;
         if !already {
             if let Err(e) = manager::start(state, id) {
-                emit_result(app, group, "start", Err(format!("{id} 启动失败：{e}")));
-                return;
+                err = Some(e);
             }
         }
-        if let Some(spec) = specs.get(id) {
-            if let Err(e) = wait_ready(state, id, spec) {
-                emit_result(app, group, "start", Err(e));
-                return;
+        if err.is_none() {
+            if let Some(spec) = specs.get(id) {
+                if let Err(e) = wait_ready(state, id, spec) {
+                    err = Some(e);
+                }
             }
+        }
+
+        if let Some(e) = err {
+            failed.push(format!("{name}（{e}）"));
+            blocked.insert(id.clone());
         }
     }
-    emit_result(app, group, "start", Ok(()));
+
+    if failed.is_empty() && skipped.is_empty() {
+        emit_result(app, group, "start", Ok(()));
+    } else {
+        let mut msg = String::new();
+        if !failed.is_empty() {
+            msg.push_str(&format!("失败 {} 个：{}", failed.len(), failed.join("、")));
+        }
+        if !skipped.is_empty() {
+            if !msg.is_empty() {
+                msg.push_str("；");
+            }
+            msg.push_str(&format!(
+                "因依赖未就绪跳过 {} 个：{}",
+                skipped.len(),
+                skipped.join("、")
+            ));
+        }
+        emit_result(app, group, "start", Err(msg));
+    }
 }
 
 fn run_stop(app: &AppHandle, state: &Arc<AppState>, ordered: &[String], group: &str) {
     let names = names_of(state);
     let total = ordered.len();
-    // 逆序停止，先起的后停，避免依赖方还在用被依赖方
+    let mut failed: Vec<String> = Vec::new();
+    // 逆序停止，先起的后停；一个停失败也不中断，继续停其余
     for (i, id) in ordered.iter().rev().enumerate() {
-        emit_progress(
+        let name = names.get(id).cloned().unwrap_or_else(|| id.clone());
+        emit_progress(app, group, "stop", id, &name, i + 1, total);
+        if let Err(e) = manager::stop(state, id) {
+            failed.push(format!("{name}（{e}）"));
+        }
+    }
+    if failed.is_empty() {
+        emit_result(app, group, "stop", Ok(()));
+    } else {
+        emit_result(
             app,
             group,
             "stop",
-            id,
-            names.get(id).map(|s| s.as_str()).unwrap_or(id),
-            i + 1,
-            total,
+            Err(format!("停止失败 {} 个：{}", failed.len(), failed.join("、"))),
         );
-        if let Err(e) = manager::stop(state, id) {
-            emit_result(app, group, "stop", Err(format!("{id} 停止失败：{e}")));
-            return;
-        }
     }
-    emit_result(app, group, "stop", Ok(()));
 }
 
 /// 计算某组的拓扑顺序（供命令层做环检测与前端展示）
