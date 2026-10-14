@@ -1,10 +1,9 @@
 //! 系统服务驱动，按平台分派：
 //!   Windows -> sc (start/stop/query)
-//!   Linux   -> systemctl (start/stop/is-active)
-//!   macOS   -> launchctl (start/stop/list)
+//!   Linux   -> systemctl，系统级失败（权限/查无单元）自动回落 systemctl --user
+//!   macOS   -> launchctl 新式 bootstrap/kickstart/bootout/print + gui/<uid> 目标
 //! 对外统一暴露 start / stop / status_running / stop_and_wait。
-//! 注意：Linux/macOS 分支无法在 Windows 上编译验证，且管理系统级服务通常需要 root/sudo，
-//!       请在对应真机上验证后再用于生产。
+//! 注意：Linux/macOS 分支无法在 Windows 上编译验证，请在对应真机上验证后再用于生产。
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -123,8 +122,12 @@ mod imp {
 mod imp {
     use super::*;
 
-    fn run(args: &[&str]) -> Result<String, String> {
-        let out = Command::new("systemctl")
+    fn run_at(user_scope: bool, args: &[&str]) -> Result<String, String> {
+        let mut cmd = Command::new("systemctl");
+        if user_scope {
+            cmd.arg("--user");
+        }
+        let out = cmd
             .args(args)
             .output()
             .map_err(|e| format!("调用 systemctl 失败: {e}"))?;
@@ -139,24 +142,67 @@ mod imp {
         }
     }
 
+    /// 系统级报「没权限 / 单元不存在」时才回落去试用户级；其它错误原样返回。
+    /// （用户级 session bus 不存在时 --user 自己会报错，两个信息都回给用户）
+    fn worth_retry_user(e: &str) -> bool {
+        let l = e.to_lowercase();
+        l.contains("access denied")
+            || l.contains("permission")
+            || l.contains("authentication")
+            || l.contains("not found")
+    }
+
+    fn action(user_scope: bool, verb: &str, service_name: &str) -> Result<(), String> {
+        run_at(user_scope, &[verb, service_name]).map(|_| ())
+    }
+
+    fn dual(verb: &str, service_name: &str) -> Result<(), String> {
+        action(false, verb, service_name).or_else(|e| {
+            if worth_retry_user(&e) {
+                action(true, verb, service_name)
+                    .map_err(|e2| format!("系统级: {e}；用户级也失败: {e2}"))
+            } else {
+                Err(e)
+            }
+        })
+    }
+
     pub fn start(service_name: &str) -> Result<(), String> {
-        run(&["start", service_name]).map(|_| ())
+        dual("start", service_name)
     }
 
     pub fn stop(service_name: &str) -> Result<(), String> {
-        run(&["stop", service_name]).map(|_| ())
+        dual("stop", service_name)
     }
 
-    pub fn status_running(service_name: &str) -> Option<bool> {
-        let out = Command::new("systemctl")
-            .args(["is-active", service_name])
-            .output()
-            .ok()?;
+    fn probe(user_scope: bool, service_name: &str) -> Option<bool> {
+        let out = {
+            let mut cmd = Command::new("systemctl");
+            if user_scope {
+                cmd.arg("--user");
+            }
+            cmd.args(["is-active", service_name])
+                .output()
+                .ok()?
+        };
         match String::from_utf8_lossy(&out.stdout).trim() {
             "active" => Some(true),
             "inactive" | "failed" | "deactivating" | "activating" | "reloading" => Some(false),
             _ => None,
         }
+    }
+
+    pub fn status_running(service_name: &str) -> Option<bool> {
+        let system = probe(false, service_name);
+        if system == Some(true) {
+            return Some(true);
+        }
+        let user = probe(true, service_name);
+        if user == Some(true) {
+            return Some(true);
+        }
+        // 两边都没在跑：优先报系统级的结论；系统级查无此单元(None)才看用户级
+        system.or(user)
     }
 
     pub fn stop_and_wait(service_name: &str, timeout: Duration) -> Result<bool, String> {
@@ -181,6 +227,17 @@ mod imp {
 mod imp {
     use super::*;
 
+    extern "C" {
+        fn getuid() -> u32;
+    }
+
+    /// 只管用户自己的 gui 域（LaunchAgents）。系统域 LaunchDaemon 的增停需要 root，
+    /// 经典动词（start/stop/list <label>）在新 macOS 上对 gui 会话经常静默失败，
+    /// 因此统一走 bootstrap / kickstart / bootout / print + `gui/<uid>` 目标。
+    fn domain() -> String {
+        format!("gui/{}", unsafe { getuid() })
+    }
+
     fn run(args: &[&str]) -> Result<String, String> {
         let out = Command::new("launchctl")
             .args(args)
@@ -195,27 +252,100 @@ mod imp {
         }
     }
 
-    // launchctl 的 label 即服务标识（plist 的 Label）。start/stop 用经典动词，best-effort。
+    /// job 不存在的报错形态（kickstart/bootout 措辞不同，都算"没加载"）
+    fn job_missing(e: &str) -> bool {
+        e.contains("Could not find service") || e.contains("No such process")
+    }
+
+    /// 按 launchd 约定（plist 文件名 == Label）在用户可见的 LaunchAgents 目录找文件。
+    /// 只搜 Agents 目录：Daemons 的 plist 拿到 gui 域也 bootstrap 不起来，不该假装能管。
+    fn agent_plist(label: &str) -> Option<String> {
+        let mut dirs: Vec<String> = Vec::new();
+        if let Ok(home) = std::env::var("HOME") {
+            dirs.push(format!("{home}/Library/LaunchAgents"));
+        }
+        dirs.push("/Library/LaunchAgents".to_string());
+        let fname = format!("{label}.plist");
+        dirs.iter()
+            .map(|d| format!("{d}/{fname}"))
+            .find(|p| std::path::Path::new(p).exists())
+    }
+
+    /// `launchctl print` 输出里判运行：pid 非 0，或 state = running（过渡态）
+    fn parse_running(s: &str) -> bool {
+        for line in s.lines() {
+            let t = line.trim();
+            if let Some(v) = t.strip_prefix("pid = ") {
+                if v.trim() != "0" {
+                    return true;
+                }
+            }
+        }
+        s.lines().any(|l| l.trim().starts_with("state = running"))
+    }
+
     pub fn start(service_name: &str) -> Result<(), String> {
-        run(&["start", service_name]).map(|_| ())
+        let dom = domain();
+        let target = format!("{dom}/{service_name}");
+        match run(&["kickstart", &target]) {
+            Ok(_) => Ok(()),
+            Err(e) if e.contains("already running") => Ok(()),
+            Err(e) if job_missing(&e) => {
+                let plist = agent_plist(service_name).ok_or_else(|| {
+                    format!(
+                        "启动失败：LaunchAgents 目录里没找到 {service_name}.plist；\
+                         若它是系统域 LaunchDaemon，本面板不支持免提权管理"
+                    )
+                })?;
+                // 已 bootstrap 过的 job 再 bootstrap 会报 already，忽略错误继续 kickstart
+                let _ = run(&["bootstrap", &dom, &plist]);
+                run(&["kickstart", &target]).map_err(|e2| {
+                    if e2.contains("disabled") {
+                        format!("{e2}（该服务被禁用，先执行: launchctl enable {target}）")
+                    } else {
+                        e2
+                    }
+                })?;
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
+    /// stop 用 bootout（卸载并终止）：对 KeepAlive 的 Agent，经典 stop 会被立即拉回，
+    /// bootout 才是真的停。start 会负责重新 bootstrap。
     pub fn stop(service_name: &str) -> Result<(), String> {
-        run(&["stop", service_name]).map(|_| ())
+        let target = format!("{}/{}", domain(), service_name);
+        match run(&["bootout", &target]) {
+            Ok(_) => Ok(()),
+            Err(e) if job_missing(&e) => {
+                // gui 域没有但系统域有：那不是"已停止"，是没权限停，必须说清楚
+                if run(&["print", &format!("system/{service_name}")]).is_ok() {
+                    Err(format!(
+                        "{service_name} 是系统域 LaunchDaemon，停止它需要管理员权限，面板暂不支持"
+                    ))
+                } else {
+                    Ok(()) // 本来就没在跑
+                }
+            }
+            Err(e) => Err(e),
+        }
     }
 
-    /// launchctl list <label> 退出码 0 表示该 job 已加载；再看 PID 是否非 0 判定运行中。
     pub fn status_running(service_name: &str) -> Option<bool> {
+        let target = format!("{}/{}", domain(), service_name);
+        if let Ok(out) = run(&["print", &target]) {
+            return Some(parse_running(&out));
+        }
+        // 系统域 job：print 要权限，经典只读 list 对 LaunchDaemon 仍可用
         let out = Command::new("launchctl")
             .args(["list", service_name])
             .output()
             .ok()?;
         if !out.status.success() {
-            return Some(false); // 未加载
+            return Some(false);
         }
-        let s = String::from_utf8_lossy(&out.stdout);
-        // 输出含 "PID" = 有进程号 -> 运行中
-        Some(s.contains("PID"))
+        Some(String::from_utf8_lossy(&out.stdout).contains("PID"))
     }
 
     pub fn stop_and_wait(service_name: &str, timeout: Duration) -> Result<bool, String> {

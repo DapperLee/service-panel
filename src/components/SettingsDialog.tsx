@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { save, open } from "@tauri-apps/plugin-dialog";
 import { api } from "../lib/api";
+import { PLATFORM } from "../lib/os";
 import type { PortAudit } from "../types";
 
 interface Props {
@@ -191,8 +192,11 @@ export default function SettingsDialog({ onClose, onChanged }: Props) {
             onClick={() => {
               if (
                 confirm(
-                  "退出面板？\n\n被面板托管的进程会一并结束（Job Object 兜底，" +
-                    "防止孤儿进程占端口）。Windows 服务与 Docker 容器不受影响。"
+                  "退出面板？\n\n被面板托管的进程会一并结束（" +
+                    PLATFORM.orphanGuard +
+                    "）。" +
+                    PLATFORM.card +
+                    " 与 Docker 容器不受影响。"
                 )
               ) {
                 api.quit().catch(() => {});

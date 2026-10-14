@@ -149,6 +149,8 @@ fn start_impl(state: &Arc<AppState>, id: &str) -> Result<(), String> {
                         pid: spawned.pid,
                         #[cfg(windows)]
                         job: spawned.job,
+                        #[cfg(unix)]
+                        guard: spawned.guard,
                     };
                     let mut rts = state.runtimes.lock().unwrap();
                     if let Some(rt) = rts.get_mut(id) {
@@ -196,6 +198,16 @@ fn log_sys(state: &Arc<AppState>, id: &str, msg: &str) {
     }
 }
 
+/// 先停看门狗、再动进程组。顺序反了的话，看门狗可能在 pgid 已被系统复用之后
+/// 才醒来补一刀 SIGKILL，误杀无关进程组。
+#[cfg(unix)]
+pub fn kill_guard(live: &mut LiveProc) {
+    if let Some(mut g) = live.guard.take() {
+        let _ = g.kill();
+        let _ = g.wait();
+    }
+}
+
 fn command_stop(state: &Arc<AppState>, id: &str, timeout_secs: u64) {
     let (live, adopted) = {
         let mut rts = state.runtimes.lock().unwrap();
@@ -205,6 +217,8 @@ fn command_stop(state: &Arc<AppState>, id: &str, timeout_secs: u64) {
         }
     };
     if let Some(mut live) = live {
+        #[cfg(unix)]
+        kill_guard(&mut live);
         #[cfg(unix)]
         let pid = live.child.id();
         let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
@@ -377,7 +391,89 @@ pub fn remove(state: &Arc<AppState>, id: &str) {
         rts.remove(id).and_then(|r| r.live)
     };
     if let Some(mut live) = live {
+        #[cfg(unix)]
+        kill_guard(&mut live);
         let _ = live.child.kill();
         let _ = live.child.wait();
     }
 }
+
+/// 退出面板时的兜底回收。Windows 由 Job Object 的 KILL_ON_JOB_CLOSE 在进程结束时
+/// 由操作系统连带回收，不需要走到这里；macOS/Linux 没有这个机制，`Child` 被 drop
+/// 只是"脱离关系"，子进程会继续活着占端口。
+///
+/// 逻辑与平台无关（这样 Windows 也能编译校验它），只有发信号那一步分平台：
+/// 先对整个进程组发 SIGTERM，宽限 1.5 秒，仍未退出的补 SIGKILL；
+/// `docker logs -f` 这类外部日志尾随进程直接强杀（它没有优雅退出的必要）。
+/// 只处理面板自己 spawn 的进程：`adopted`（接管的外部进程）与系统服务、
+/// 容器本体一律不碰。
+#[allow(dead_code)] // Windows 上没人调用（Job Object 已兜底），但代码要保持可编译
+pub fn reap_children_on_exit(state: &Arc<AppState>) {
+    let (mut procs, mut tails) = {
+        let mut rts = state.runtimes.lock().unwrap();
+        let mut procs = Vec::new();
+        let mut tails = Vec::new();
+        for rt in rts.values_mut() {
+            if rt.spec.driver == DriverKind::Command {
+                if let Some(live) = rt.live.take() {
+                    procs.push(live);
+                }
+            }
+            if let Some(tail) = rt.tail.take() {
+                tails.push(tail);
+            }
+        }
+        (procs, tails)
+    };
+    if procs.is_empty() && tails.is_empty() {
+        return;
+    }
+
+    // 看门狗必须先于任何组级信号停掉（见 kill_guard 注释）
+    #[cfg(unix)]
+    for live in procs.iter_mut() {
+        kill_guard(live);
+    }
+
+    for live in procs.iter() {
+        signal_group(live, false);
+    }
+    for tail in tails.iter_mut() {
+        let _ = tail.child.kill();
+        let _ = tail.child.wait();
+    }
+
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    loop {
+        let pending = procs.iter_mut().any(|l| match l.child.try_wait() {
+            Ok(Some(_)) => false,
+            _ => true,
+        });
+        if !pending || Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    for live in procs.iter_mut() {
+        let gone = matches!(live.child.try_wait(), Ok(Some(_)));
+        if !gone {
+            signal_group(live, true);
+        }
+        let _ = live.child.wait();
+    }
+}
+
+/// 向托管进程发退出信号（组级）
+fn signal_group(live: &LiveProc, force: bool) {
+    #[cfg(unix)]
+    {
+        crate::drivers::command::kill_group(live.pid, force);
+    }
+    // Windows：句柄关闭即由操作系统回收整棵树，这里不做任何事。
+    #[cfg(windows)]
+    {
+        let _ = (live, force);
+    }
+}
+

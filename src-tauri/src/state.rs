@@ -14,6 +14,10 @@ pub struct LiveProc {
     #[cfg(windows)]
     #[allow(dead_code)]
     pub job: Option<crate::drivers::command::JobHandle>,
+    /// unix 看门狗子进程（--guard 副本）。任何对进程组的操作前都要先杀掉它，
+    /// 否则它可能在 pgid 被系统复用后醒来补刀，误杀无关进程组。
+    #[cfg(unix)]
+    pub guard: Option<Child>,
 }
 
 /// 外部服务（Docker）的日志尾随子进程（如 `docker logs -f`）

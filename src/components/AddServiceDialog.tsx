@@ -8,6 +8,7 @@ import {
   type ServiceView,
 } from "../types";
 import { api } from "../lib/api";
+import { PLATFORM } from "../lib/os";
 
 interface Props {
   editing: ServiceView | null;
@@ -103,7 +104,7 @@ export default function AddServiceDialog({
     if (spec.driver === "command" && !spec.command.trim())
       return setError("请填写启动命令");
     if (spec.driver === "windows_service" && !spec.serviceName.trim())
-      return setError("请填写 Windows 服务名");
+      return setError(PLATFORM.nameRequired);
     if (spec.driver === "docker" && !spec.container.trim())
       return setError("请填写容器名/ID");
 
@@ -152,7 +153,7 @@ export default function AddServiceDialog({
             onChange={(e) => patch({ driver: e.target.value as DriverKind })}
           >
             <option value="command">命令行进程（Python / Node / Go / exe）</option>
-            <option value="windows_service">Windows 服务</option>
+            <option value="windows_service">{PLATFORM.option}</option>
             <option value="docker">Docker 容器</option>
           </select>
         </div>
@@ -197,7 +198,7 @@ export default function AddServiceDialog({
               <input
                 value={spec.command}
                 onChange={(e) => patch({ command: e.target.value })}
-                placeholder="python / node / go / 绝对路径 exe"
+                placeholder={PLATFORM.commandPlaceholder}
               />
             </div>
             <div className="field">
@@ -213,7 +214,7 @@ export default function AddServiceDialog({
               <input
                 value={spec.cwd}
                 onChange={(e) => patch({ cwd: e.target.value })}
-                placeholder="D:\code\myproj"
+                placeholder={PLATFORM.cwdPlaceholder}
               />
             </div>
             <div className="field">
@@ -253,11 +254,11 @@ export default function AddServiceDialog({
 
         {driver === "windows_service" && (
           <div className="field">
-            <label>Windows 服务名（sc query 用的名字）</label>
+            <label>{PLATFORM.nameLabel}</label>
             <input
               value={spec.serviceName}
               onChange={(e) => patch({ serviceName: e.target.value })}
-              placeholder="MySQL80 / Redis"
+              placeholder={PLATFORM.namePlaceholder}
             />
           </div>
         )}
@@ -284,7 +285,7 @@ export default function AddServiceDialog({
           <input
             value={spec.logPath}
             onChange={(e) => patch({ logPath: e.target.value })}
-            placeholder="D:\\ProgramData\\MySQL\\MySQL Server 8.0\\Data\\mysqld.err"
+            placeholder={PLATFORM.logPlaceholder}
           />
         </div>
 

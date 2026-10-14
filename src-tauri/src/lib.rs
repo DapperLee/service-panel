@@ -5,6 +5,7 @@ mod drivers;
 mod elevate;
 mod export;
 mod group;
+mod guard;
 mod health;
 mod logs;
 mod logsrc;
@@ -62,6 +63,12 @@ fn panic_log(msg: &str) -> std::io::Result<()> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     install_panic_hook();
+    // 看门狗模式（unix）：面板为每个 command 型服务拉起的副本进程从这里分流，
+    // 只负责"父进程消失 -> kill(-pgid)"，绝不能构建 GUI/注册单实例。
+    #[cfg(unix)]
+    if let Some(code) = guard::serve_if_guard_mode() {
+        std::process::exit(code);
+    }
     tauri::Builder::default()
         // 单实例：开机自启 + 用户手动再开时，只唤起已有窗口，不再起第二个面板
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -230,6 +237,19 @@ pub fn run() {
             commands::import_config,
             commands::port_audit,
         ])
-        .run(tauri::generate_context!())
-        .expect("运行 服务面板 失败");
+        .build(tauri::generate_context!())
+        .expect("运行 服务面板 失败")
+        .run(|app_handle, event| {
+            // macOS/Linux 上面板退出时操作系统不会替我们回收子进程（没有 Job Object
+            // 那种"句柄关闭即结束整棵树"的机制），不手动 kill(-pgid) 的话，托管的
+            // 服务在面板退出后仍会活着占端口。Windows 走 Job Object，这里无事可做。
+            #[cfg(unix)]
+            if let tauri::RunEvent::Exit { .. } = event {
+                if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
+                    manager::reap_children_on_exit(&state);
+                }
+            }
+            #[cfg(not(unix))]
+            let _ = (app_handle, event);
+        });
 }

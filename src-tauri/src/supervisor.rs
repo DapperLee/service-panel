@@ -187,6 +187,13 @@ fn tick(state: &Arc<AppState>, sys: &System) {
                 }
                 if let Some(code) = exited {
                     let prev = rt.state;
+                    #[cfg(unix)]
+                    if let Some(live) = rt.live.as_mut() {
+                        crate::manager::kill_guard(live);
+                        // 与 Windows 的 KILL_ON_JOB_CLOSE 对齐：直接子进程已死时，
+                        // 同组残留（如 npm 下面的 vite）也一并清掉，不等看门狗择机补刀
+                        crate::drivers::command::kill_group(live.pid, true);
+                    }
                     rt.live = None; // drop 触发 Job 回收
                     rt.adopted = None;
                     if rt.desired == Desired::Running {

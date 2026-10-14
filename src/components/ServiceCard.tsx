@@ -1,5 +1,6 @@
 import type { ServiceView, State } from "../types";
 import { api } from "../lib/api";
+import { PLATFORM } from "../lib/os";
 
 const STATE_LABEL: Record<State, string> = {
   stopped: "已停止",
@@ -13,7 +14,7 @@ const STATE_LABEL: Record<State, string> = {
 
 const DRIVER_LABEL: Record<string, string> = {
   command: "进程",
-  windows_service: "Windows 服务",
+  windows_service: PLATFORM.card,
   docker: "Docker",
 };
 

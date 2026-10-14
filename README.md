@@ -16,25 +16,96 @@
 
 ## 快速开始
 
+### 第 0 步：装环境依赖
+
+需要三样东西：**Rust 工具链（rustup，≥1.77）**、**Node.js 18+**、**平台 C++ 构建工具**。装完**重开一个终端**再执行下面的验证命令。
+
+**Windows（PowerShell）**
+
+```powershell
+# 1) Visual Studio Build Tools（必须勾选 C++ 工作负载，rustc 的 MSVC 后端和 rusqlite 都依赖 link.exe/cl.exe）
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+
+# 2) Rust 工具链（默认 host=x86_64-pc-windows-msvc，别装 GNU 版）
+winget install Rustlang.Rustup
+
+# 3) Node.js LTS
+winget install OpenJS.NodeJS.LTS
+
+# 4) WebView2 运行时（Win11 和较新的 Win10 已随 Edge 内置；缺了才需要装）
+winget install Microsoft.EdgeWebView2Runtime
+```
+
+> 第 1 步若 winget 的 `--override` 不生效（公司网/已装过），就打开"Visual Studio Installer → 修改 → 单个组件/工作负载"，手动勾选**「使用 C++ 的桌面开发」**，至少包含 MSVC v143 生成工具 + Windows 10/11 SDK。
+
+**macOS**
+
 ```bash
-# 1) 安装依赖（国内网络建议用镜像源）
+xcode-select --install                                  # clang + 系统框架
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # Rust
+brew install node                                       # Node.js
+# 然后重开终端，或执行：source "$HOME/.cargo/env"
+```
+
+**Linux（Debian / Ubuntu）**
+
+```bash
+sudo apt update
+sudo apt install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+                    libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# Node.js 建议用 nvm：https://github.com/nvm-sh/nvm
+nvm install --lts
+```
+
+其它发行版（Fedora/Arch）按 Tauri 官方依赖清单安装，关键字：`webkit2gtk-4.1`、`libappindicator`、`libxdo`、`openssl-devel`。
+
+**国内网络加速（可选，卡在下载时才需要）**
+
+```bash
+# crates.io 换镜像（写入 ~/.cargo/config.toml，全局生效）
+mkdir -p ~/.cargo
+cat >> ~/.cargo/config.toml <<'EOF'
+[source.crates-io]
+replace-with = 'rsproxy-sparse'
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
+EOF
+
+# rustup 自身下载源换镜像（PowerShell 用 $env: 语法）
+export RUSTUP_DIST_SERVER="https://rsproxy.cn"
+export RUSTUP_UPDATE_ROOT="https://rsproxy.cn/rustup"
+```
+
+**验证环境（四行都要有输出再进下一步）**
+
+```bash
+rustc -V && cargo -V && node -v && npm -v
+```
+
+### 第 1~3 步：装依赖、运行、打包
+
+```bash
+cd service-panel
+
+# 1) 安装前端依赖（国内网络建议用镜像源）
 npm install --registry=https://registry.npmmirror.com
 
-# 2) 开发运行（首次会编译 Rust，较慢）
+# 2) 开发运行（首次会编译全部 Rust 依赖，5~15 分钟属正常，之后增量很快）
 npm run tauri dev
 
 # 3) 打包安装包（产物在 src-tauri/target/release/bundle/）
 npm run tauri build
 ```
 
-环境要求：**Rust（stable）+ Node.js 18+**。Windows 需 MSVC Build Tools；macOS 需 `xcode-select --install`；Linux 需 `build-essential` 与 Tauri 的 `webkit2gtk` 等系统依赖。
+要管 Windows 系统服务需管理员权限：开发时用**管理员终端**跑 `npm run tauri dev`。
 
 ---
 
 ## 功能特性
 
 - **三类服务统一管理**：命令行进程、系统服务（Windows 服务 / systemd / launchd）、Docker 容器，一套界面。
-- **可靠启停**：停止时回收整棵进程树（Windows 用 Job Object，Linux/macOS 用进程组），不留孤儿进程占端口。
+- **可靠启停**：停止时回收整棵进程树（Windows 用 Job Object，Linux/macOS 用进程组），不留孤儿进程占端口；面板自身崩溃时，Linux/macOS 由随服务拉起的轻量看门狗进程补刀回收。
 - **健康检查 + 崩溃自愈**：TCP/HTTP/命令探活，异常按指数退避自动重启，用户手动停止不会被误拉起。
 - **依赖拓扑一键启停**：给服务设依赖，分组按拓扑顺序"起一个、等它健康再起下一个"，停止逆序，并有 SVG 依赖图可视化。
 - **开机自启 + 托盘常驻**：登录后台自启、按依赖拉起勾选的服务；关闭窗口收进托盘。
@@ -85,6 +156,7 @@ service-panel/
   src-tauri/src/       Rust 后端
     drivers/           command / winservice(systemd·launchd·sc) / docker
     manager.rs         启停编排 + 生命周期互斥锁
+    guard.rs           unix 看门狗：面板崩溃后由它 kill(-pgid) 兜底
     supervisor.rs      监督线程：崩溃检测、健康、重启退避、资源采样
     group.rs           分组拓扑排序（Kahn）+ 按序启停
     health.rs          TCP / HTTP / 命令 健康检查

@@ -26,6 +26,28 @@ pub struct SpawnedProc {
     pub pid: u32,
     #[cfg(windows)]
     pub job: Option<Job>,
+    /// unix 看门狗（自身 exe 的 --guard 副本），随 LiveProc 存亡：
+    /// 面板正常停止/退出/重启该服务前必须先杀掉它，再动进程组。
+    #[cfg(unix)]
+    pub guard: Option<Child>,
+}
+
+/// 拉起看护进程：面板死亡（getppid 变化）后由它 kill(-pgid) 兜底。
+/// mac 没有 PR_SET_PDEATHSIG，只能靠这个独立进程；Linux 上也顺带覆盖孙进程。
+#[cfg(unix)]
+fn spawn_guard(pgid: u32) -> Result<Child, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    std::process::Command::new(exe)
+        .args([
+            "--guard",
+            &std::process::id().to_string(),
+            &pgid.to_string(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("spawn 看门狗失败: {e}"))
 }
 
 /// 启动前的命令校验。空命令必须直接失败：否则会落到下面 `cmd /C` 那条回退分支，
@@ -140,6 +162,11 @@ pub fn spawn(
         Some(j)
     };
 
+    // unix：立刻为这个进程组拉起看门狗。spawn 失败不阻断启动，但要把降级
+    // 结果说清楚（面板崩溃时该服务不会被自动回收）。
+    #[cfg(unix)]
+    let guard = spawn_guard(pid);
+
     // 起两个后台线程读 stdout/stderr（管道缓冲区写满会阻塞子进程，必须持续消费）
     let stdout = child
         .stdout
@@ -156,6 +183,20 @@ pub fn spawn(
         &emitter,
         &sink,
     );
+
+    #[cfg(unix)]
+    let guard = match guard {
+        Ok(c) => Some(c),
+        Err(e) => {
+            crate::logs::system_message(
+                &format!("[panel] 看门狗启动失败: {e}（面板崩溃时本服务不会被自动回收）"),
+                service_id,
+                &emitter,
+                &sink,
+            );
+            None
+        }
+    };
 
     crate::logs::spawn_reader(
         stdout,
@@ -179,6 +220,8 @@ pub fn spawn(
         pid,
         #[cfg(windows)]
         job,
+        #[cfg(unix)]
+        guard,
     })
 }
 
