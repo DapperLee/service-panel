@@ -1,8 +1,10 @@
 use std::process::{Command, Stdio};
 
 fn run(args: &[&str]) -> Result<String, String> {
-    let out = Command::new("docker")
-        .args(args)
+    let mut cmd = Command::new("docker");
+    cmd.args(args);
+    crate::drivers::command::hide_window(&mut cmd);
+    let out = cmd
         .output()
         .map_err(|e| format!("调用 docker 失败（Docker Desktop 是否在运行？）: {e}"))?;
     if out.status.success() {
@@ -15,13 +17,12 @@ fn run(args: &[&str]) -> Result<String, String> {
 /// 前置探测：Docker 引擎（守护进程）是否可达。
 /// 用 `docker version` 探测——daemon 没起时它退出码非 0，且连不存在的命名管道会快速失败不卡住。
 pub fn engine_up() -> bool {
-    Command::new("docker")
-        .args(["version", "--format", "{{.Server.Version}}"])
+    let mut cmd = Command::new("docker");
+    cmd.args(["version", "--format", "{{.Server.Version}}"])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .stderr(Stdio::null());
+    crate::drivers::command::hide_window(&mut cmd);
+    cmd.status().map(|s| s.success()).unwrap_or(false)
 }
 
 pub fn start(container: &str) -> Result<(), String> {
@@ -41,10 +42,10 @@ pub fn stop(container: &str) -> Result<(), String> {
 
 /// 读取容器运行状态
 pub fn status_running(container: &str) -> Option<bool> {
-    let out = Command::new("docker")
-        .args(["inspect", "-f", "{{.State.Running}}", container])
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("docker");
+    cmd.args(["inspect", "-f", "{{.State.Running}}", container]);
+    crate::drivers::command::hide_window(&mut cmd);
+    let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
     }

@@ -18,8 +18,10 @@ mod imp {
     const STATE_RUNNING: u32 = 4;
 
     fn run(args: &[&str]) -> Result<String, String> {
-        let out = Command::new("sc")
-            .args(args)
+        let mut cmd = Command::new("sc");
+        cmd.args(args);
+        crate::drivers::command::hide_window(&mut cmd);
+        let out = cmd
             .output()
             .map_err(|e| format!("调用 sc 失败: {e}"))?;
         // sc 在中文 Windows 上输出 OEM(936/GBK)
@@ -59,10 +61,10 @@ mod imp {
     }
 
     fn query_state(service_name: &str) -> Option<u32> {
-        let out = Command::new("sc")
-            .args(["query", service_name])
-            .output()
-            .ok()?;
+        let mut cmd = Command::new("sc");
+        cmd.args(["query", service_name]);
+        crate::drivers::command::hide_window(&mut cmd);
+        let out = cmd.output().ok()?;
         if !out.status.success() {
             return None;
         }

@@ -167,12 +167,12 @@ fn command_probe(target: &str, timeout: Duration) -> Result<(), String> {
     } else {
         ("sh", "-c")
     };
-    let mut child = Command::new(prog)
-        .args([flag, target])
+    let mut cmd = Command::new(prog);
+    cmd.args([flag, target])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| e.to_string())?;
+        .stderr(Stdio::null());
+    crate::drivers::command::hide_window(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     let start = Instant::now();
     loop {
         match child.try_wait() {
