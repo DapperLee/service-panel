@@ -61,8 +61,42 @@ fn panic_log(msg: &str) -> std::io::Result<()> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// GUI 启动（Finder/Dock/open/开机自启）时，进程只继承 launchd 的最小 PATH
+/// （/usr/bin:/bin:/usr/sbin:/sbin），找不到 node/npm/homebrew 装的任何东西，
+/// 于是服务报 `env: node: No such file or directory`（dev 模式继承终端完整
+/// PATH 所以没事）。这里把常见包管理器目录补到 PATH 最前面，进程级生效，
+/// 之后所有子进程（服务、docker/launchctl 探测、健康检查）全部受益。
+/// nvm 等自定义安装位置仍需用户在服务的 env 里自行补 PATH。
+#[cfg(target_os = "macos")]
+fn fix_gui_path() {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mut dirs: Vec<String> = vec![
+        "/opt/homebrew/bin".into(),
+        "/opt/homebrew/sbin".into(),
+        "/usr/local/bin".into(),
+        "/usr/local/sbin".into(),
+    ];
+    if !home.is_empty() {
+        dirs.push(format!("{home}/.local/bin"));
+        dirs.push(format!("{home}/bin"));
+    }
+    if let Ok(cur) = std::env::var("PATH") {
+        dirs.extend(cur.split(':').map(str::to_string));
+    }
+    // 去重且保序（先出现的优先）
+    let mut seen = std::collections::HashSet::new();
+    let joined = dirs
+        .into_iter()
+        .filter(|d| !d.is_empty() && seen.insert(d.clone()))
+        .collect::<Vec<_>>()
+        .join(":");
+    std::env::set_var("PATH", joined);
+}
+
 pub fn run() {
     install_panic_hook();
+    #[cfg(target_os = "macos")]
+    fix_gui_path();
     // 看门狗模式（unix）：面板为每个 command 型服务拉起的副本进程从这里分流，
     // 只负责"父进程消失 -> kill(-pgid)"，绝不能构建 GUI/注册单实例。
     #[cfg(unix)]
