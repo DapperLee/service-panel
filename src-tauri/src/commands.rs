@@ -305,14 +305,14 @@ pub fn restart_as_admin(app: tauri::AppHandle) -> Result<(), String> {
         }
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let exe_str = exe.to_string_lossy().replace('\'', "''"); // PowerShell 单引号转义
-        std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                &format!("Start-Process -FilePath '{exe_str}' -Verb RunAs"),
-            ])
-            .spawn()
-            .map_err(|e| format!("启动失败: {e}"))?;
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args([
+            "-NoProfile",
+            "-Command",
+            &format!("Start-Process -FilePath '{exe_str}' -Verb RunAs"),
+        ]);
+        crate::drivers::command::hide_window(&mut cmd);
+        cmd.spawn().map_err(|e| format!("启动失败: {e}"))?;
         app.exit(0);
         Ok(())
     }
