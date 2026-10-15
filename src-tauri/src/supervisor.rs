@@ -1,3 +1,4 @@
+use crate::drivers::ExtStatus;
 use crate::health;
 use crate::manager;
 use crate::state::{AppState, StateEvent};
@@ -162,14 +163,38 @@ fn tick(state: &Arc<AppState>, sys: &System) {
         let mut rts = state.runtimes.lock().unwrap();
         let now = now_ms();
         for (id, rt) in rts.iter_mut() {
-            // 1) 资源采样（sys 已刷新，无 I/O）
-            if let Some(live) = &rt.live {
-                let (cpu, mem_mb) = sample_tree(sys, &children_map, live.pid);
-                rt.cpu = cpu;
-                rt.mem_mb = mem_mb;
+            // 1) 资源采样（sys 已刷新，无 I/O）。
+            //    外部驱动的宿主 PID / 自报指标由上一拍 Phase C 的探测填进来。
+            if rt.desired != Desired::Running {
+                rt.ext_pid = None;
+                rt.ext_metrics = None;
+            }
+            let sampled = if let Some(live) = &rt.live {
+                sample_tree(sys, &children_map, live.pid)
+            } else if let Some(a) = &rt.adopted {
+                sample_tree(sys, &children_map, a.pid)
+            } else if let Some(m) = rt.ext_metrics {
+                Some(m)
+            } else if let Some(pid) = rt.ext_pid {
+                // 系统服务的宿主进程可能同时承载别的服务（svchost），按它采样会把
+                // 整组的占用算到本服务头上，不如报「测不到」
+                if is_shared_host(sys, pid) {
+                    None
+                } else {
+                    sample_tree(sys, &children_map, pid)
+                }
             } else {
-                rt.cpu = 0.0;
-                rt.mem_mb = 0.0;
+                None
+            };
+            match sampled {
+                Some((cpu, mem_mb)) => {
+                    rt.cpu = Some(cpu);
+                    rt.mem_mb = Some(mem_mb);
+                }
+                None => {
+                    rt.cpu = None;
+                    rt.mem_mb = None;
+                }
             }
 
             // 2) 崩溃检测：托管进程意外退出（try_wait 非阻塞，可在锁内）
@@ -249,21 +274,21 @@ fn tick(state: &Arc<AppState>, sys: &System) {
     // 或做网络握手，服务多时若一 tick 全量并发，线程与子进程能瞬间堆出上百个。
     // 探测线程 panic 时该 id 直接缺席：外部状态视为未知（不误判崩溃）、
     // 健康结果视为未探测（不累加 unhealthy_streak）。
-    let mut external_results: Vec<(String, Option<bool>)> = Vec::new();
+    let mut external_results: Vec<(String, ExtStatus)> = Vec::new();
     for chunk in external_jobs.chunks(PROBE_CONCURRENCY) {
-        let part: Vec<(String, Option<bool>)> = thread::scope(|s| {
+        let part: Vec<(String, ExtStatus)> = thread::scope(|s| {
             let handles: Vec<_> = chunk
                 .iter()
                 .map(|(id, driver, target)| {
                     s.spawn(move || {
-                        let running = match driver {
+                        let st = match driver {
                             DriverKind::WindowsService => {
-                                crate::drivers::winservice::status_running(target)
+                                crate::drivers::winservice::status_full(target)
                             }
-                            DriverKind::Docker => crate::drivers::docker::status_running(target),
-                            _ => None,
+                            DriverKind::Docker => crate::drivers::docker::status_full(target),
+                            _ => ExtStatus::default(),
                         };
-                        (id.clone(), running)
+                        (id.clone(), st)
                     })
                 })
                 .collect();
@@ -284,7 +309,7 @@ fn tick(state: &Arc<AppState>, sys: &System) {
         health_results.extend(part);
     }
 
-    let ext_map: HashMap<String, Option<bool>> = external_results.into_iter().collect();
+    let ext_map: HashMap<String, ExtStatus> = external_results.into_iter().collect();
     let health_map: HashMap<String, Result<(), String>> = health_results.into_iter().collect();
 
     // —— Phase C：回锁应用结果 + 排期重启（探测期间状态可能被用户改动，需重新校验）——
@@ -303,10 +328,12 @@ fn tick(state: &Arc<AppState>, sys: &System) {
             // 外部服务未运行 -> 视为崩溃
             if rt.desired == Desired::Running
                 && rt.spec.driver != DriverKind::Command
-                && matches!(ext_map.get(id), Some(Some(false)))
+                && ext_map.get(id).and_then(|s| s.running) == Some(false)
             {
                 let prev = rt.state;
                 rt.state = State::Crashed;
+                rt.ext_pid = None;
+                rt.ext_metrics = None;
                 events.push(StateEvent {
                     id: id.clone(),
                     from: Some(prev),
@@ -318,6 +345,13 @@ fn tick(state: &Arc<AppState>, sys: &System) {
                 to_detach.push(id.clone());
                 maybe_schedule_restart(rt, now);
                 continue;
+            }
+
+            // 探测回来的宿主进程号/指标交给下一拍 Phase A 采样（这里不做任何阻塞 I/O）
+            if let Some(st) = ext_map.get(id) {
+                let alive = st.running == Some(true);
+                rt.ext_pid = alive.then_some(st.pid).flatten();
+                rt.ext_metrics = alive.then_some(st.metrics).flatten();
             }
 
             // 健康检查结果（仅对仍是 Running 的服务应用，避免探测期间被停止后误判）
@@ -424,10 +458,36 @@ fn build_children_map(sys: &System) -> HashMap<Pid, Vec<Pid>> {
     map
 }
 
+/// 「一个进程承载多个服务/程序」的宿主名，按它们的占用记账会把别人算进来，宁可不报：
+/// - `svchost.exe` / `services.exe`：一组系统服务共用一个进程；
+/// - `conhost.exe`：Windows 给控制台进程配的窗口宿主，可被多个进程共用。
+///
+/// 判据用进程名而不是服务的 `dwServiceType`：实测那个位不可信
+/// （独占进程的 MySQL84/Spooler 也置位，RpcSs 反而不置位）。
+fn is_shared_host_name(name: &str) -> bool {
+    matches!(name, "svchost.exe" | "services.exe" | "conhost.exe")
+}
+
+/// 该进程是不是「一个进程承载多个服务」的宿主。
+fn is_shared_host(sys: &System, pid: u32) -> bool {
+    match sys.process(Pid::from_u32(pid)) {
+        Some(p) => is_shared_host_name(&p.name().to_lowercase()),
+        // 进程都不在了，交给 sample_tree 那边一并判掉
+        None => false,
+    }
+}
+
 /// 采样根进程及其**整棵进程树**（BFS 含孙进程）的 CPU/内存之和。
 /// Node/pm2 的 worker 常是孙进程，只数直接子进程会明显少报。
-fn sample_tree(sys: &System, children_map: &HashMap<Pid, Vec<Pid>>, root_pid: u32) -> (f32, f32) {
+/// 根进程不在本轮快照里（已退出，或如 macOS 上的容器进程那样压根不在本机进程表中）
+/// 时返回 None：报「测不到」比报 0 诚实。
+fn sample_tree(
+    sys: &System,
+    children_map: &HashMap<Pid, Vec<Pid>>,
+    root_pid: u32,
+) -> Option<(f32, f32)> {
     let root = Pid::from_u32(root_pid);
+    sys.process(root)?;
     let mut cpu = 0.0f32;
     let mut mem_bytes = 0u64;
     let mut stack = vec![root];
@@ -437,12 +497,84 @@ fn sample_tree(sys: &System, children_map: &HashMap<Pid, Vec<Pid>>, root_pid: u3
             continue; // 防御环/重复
         }
         if let Some(p) = sys.process(pid) {
-            cpu += p.cpu_usage();
-            mem_bytes += p.memory();
+            // 窗口宿主 / 服务宿主这类共用进程不算进本服务的账
+            if !is_shared_host_name(&p.name().to_lowercase()) {
+                cpu += p.cpu_usage();
+                mem_bytes += p.memory();
+            }
         }
         if let Some(kids) = children_map.get(&pid) {
             stack.extend(kids.iter().copied());
         }
     }
-    (cpu, mem_bytes as f32 / (1024.0 * 1024.0))
+    Some((cpu, mem_bytes as f32 / (1024.0 * 1024.0)))
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::{build_children_map, is_shared_host, sample_tree, tick};
+    use std::sync::Arc;
+    use sysinfo::System;
+
+    /// 端到端：系统服务探测回来的宿主 PID 真能采出内存占用。
+    /// 这条链路以前只对面板自己 spawn 的进程生效，外部服务因此恒显示 0。
+    #[test]
+    fn external_service_host_yields_real_metrics() {
+        let st = crate::drivers::winservice::status_full("Spooler");
+        let Some(pid) = st.pid else {
+            eprintln!("Spooler 未运行（部分 Windows 上它是手动启动），跳过");
+            return;
+        };
+        let mut sys = System::new_all();
+        sys.refresh_processes();
+        let map = build_children_map(&sys);
+        assert!(!is_shared_host(&sys, pid), "spoolsv 不是共享宿主，被误判了");
+        let (_cpu, mem_mb) = sample_tree(&sys, &map, pid).expect("宿主进程应在进程表里");
+        // CPU 只在服务真干活时才非 0，空闲时按 0 算是对的；内存不可能为 0
+        assert!(mem_mb > 0.0, "内存采出 {mem_mb}MB，采样链路没生效");
+    }
+
+    /// 走两拍真实 tick：外部服务应从「探测回传 PID」一路走到「采样出内存」。
+    /// 只测函数不够——以前断掉的正是 Phase C 写 ext_pid、Phase A 读它这一环。
+    #[test]
+    fn tick_samples_external_service_across_phases() {
+        use crate::state::{AppState, Runtime};
+        use crate::types::{Desired, DriverKind, ServiceSpec, State};
+
+        let probe = crate::drivers::winservice::status_full("Spooler");
+        if probe.running != Some(true) {
+            eprintln!("Spooler 未运行，跳过 tick 验证");
+            return;
+        }
+        let spec = ServiceSpec {
+            driver: DriverKind::WindowsService,
+            service_name: "Spooler".to_string(),
+            ..ServiceSpec::default()
+        };
+        let state = Arc::new(AppState::new(
+            rusqlite::Connection::open_in_memory().unwrap(),
+            std::env::temp_dir(),
+        ));
+        let rt = Runtime {
+            state: State::Running,
+            desired: Desired::Running,
+            ..Runtime::new(spec)
+        };
+        state.runtimes.lock().unwrap().insert("sp".into(), rt);
+
+        let mut sys = System::new_all();
+        tick(&state, &sys); // 第一拍：探测回传宿主 PID
+        sys.refresh_processes();
+        tick(&state, &sys); // 第二拍：按 PID 采样
+
+        let rts = state.runtimes.lock().unwrap();
+        let rt = rts.get("sp").unwrap();
+        assert_eq!(rt.ext_pid, probe.pid, "Phase C 没把探测回来的 PID 存下");
+        assert!(
+            rt.mem_mb.unwrap_or(0.0) > 0.0,
+            "两拍之后仍没采到内存：cpu={:?} mem={:?}",
+            rt.cpu,
+            rt.mem_mb
+        );
+    }
 }

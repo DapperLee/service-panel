@@ -121,8 +121,8 @@ fn row_to_view(
         state: State::Stopped,
         desired: Desired::Stopped,
         pid: None,
-        cpu: 0.0,
-        mem_mb: 0.0,
+        cpu: None,
+        mem_mb: None,
         last_error: if config_ok {
             None
         } else {

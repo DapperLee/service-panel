@@ -109,7 +109,7 @@ npm run tauri build
 - **健康检查 + 崩溃自愈**：TCP/HTTP/命令探活，异常按指数退避自动重启，用户手动停止不会被误拉起。
 - **依赖拓扑一键启停**：给服务设依赖，分组按拓扑顺序"起一个、等它健康再起下一个"，停止逆序，并有 SVG 依赖图可视化。
 - **开机自启 + 托盘常驻**：登录后台自启、按依赖拉起勾选的服务；关闭窗口收进托盘。
-- **实时日志与观测**：stdout/stderr/Docker/文件尾随统一展示，支持关键字过滤、自动编码（UTF-8/GBK）、事件时间线、资源占用。
+- **实时日志与观测**：stdout/stderr/Docker/文件尾随统一展示，支持关键字过滤、自动编码（UTF-8/GBK）、事件时间线、资源占用（按整棵进程树统计；系统服务与容器同样可测，仅当一个进程承载了多个服务时（如 Windows 的 svchost）无法拆分，显示「—」而不是把别家的占用算到它头上）。
 
 ---
 
@@ -136,7 +136,7 @@ npm run tauri build
 | 桌面框架 | Tauri 2（Rust 后端 + 系统 WebView） |
 | 前端 | React 18 + TypeScript + Vite 5 |
 | 存储 | SQLite（`rusqlite`，bundled） |
-| 进程/系统 | 原生 `std::process` + Windows Job Object / unix 进程组；`sysinfo` 采资源 |
+| 进程/系统 | 原生 `std::process` + Windows Job Object / unix 进程组；`sysinfo` 采资源，外部服务的宿主进程号走 `QueryServiceStatusEx` / `systemctl show -p MainPID` / `launchctl print`，容器指标走 `docker stats` |
 | 关键库 | `chrono` `uuid` `encoding_rs` `base64`；插件 `autostart` `single-instance` `dialog` |
 
 配置与数据存放：`%APPDATA%\com.local.servicepanel\`（Windows）下 `data/panel.db` 与 `logs/<服务id>/*.log`。
