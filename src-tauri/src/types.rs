@@ -212,8 +212,9 @@ pub struct ServiceView {
     pub state: State,
     pub desired: Desired,
     pub pid: Option<u32>,
-    pub cpu: f32,
-    pub mem_mb: f32,
+    /// None = 测不到（外部驱动拿不到宿主进程），前端显示「—」而不是 0
+    pub cpu: Option<f32>,
+    pub mem_mb: Option<f32>,
     pub last_error: Option<String>,
     /// spec 解密/解析是否成功。false 表示配置损坏（如 DPAPI 不可用），
     /// 列表会标红且导出会中止，避免把空配置当真实配置写进备份。

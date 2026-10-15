@@ -97,8 +97,113 @@ mod imp {
         None
     }
 
+    /// 服务状态与宿主进程号。
+    ///
+    /// 不走 `sc query`：那要起子进程，而面板每 2 秒就要问一轮，且 `sc query` 的输出里
+    /// 根本没有 PID（这正是外部服务 CPU/内存恒为 0 的原因）。`QueryServiceStatusEx`
+    /// 一次调用同时拿到状态与宿主进程号。
+    mod ffi {
+        use std::ffi::c_void;
+
+        const SC_MANAGER_CONNECT: u32 = 0x0001;
+        const SERVICE_QUERY_STATUS: u32 = 0x0004;
+        /// QueryServiceStatusEx 唯一支持的信息级别，即取 SERVICE_STATUS_PROCESS
+        const SC_STATUS_PROCESS_INFO: u32 = 0;
+
+        #[repr(C)]
+        #[allow(non_snake_case)]
+        // 布局由内核定义，字段一个都不能省，哪怕只用其中两个
+        #[allow(dead_code)]
+        struct ServiceStatusProcess {
+            dwServiceType: u32,
+            dwCurrentState: u32,
+            dwControlsAccepted: u32,
+            dwWin32ExitCode: u32,
+            dwServiceExitCode: u32,
+            dwCheckPoint: u32,
+            dwWaitHint: u32,
+            dwProcessId: u32,
+            dwServiceFlags: u32,
+        }
+
+        #[link(name = "advapi32")]
+        extern "system" {
+            fn OpenSCManagerW(machine: *const u16, database: *const u16, access: u32) -> *mut c_void;
+            fn OpenServiceW(scm: *mut c_void, name: *const u16, access: u32) -> *mut c_void;
+            fn QueryServiceStatusEx(
+                service: *mut c_void,
+                level: u32,
+                buf: *mut u8,
+                buf_size: u32,
+                needed: *mut u32,
+            ) -> i32;
+            fn CloseHandle(obj: *mut c_void) -> i32;
+        }
+
+        fn wide(s: &str) -> Vec<u16> {
+            s.encode_utf16().chain(std::iter::once(0)).collect()
+        }
+
+        /// 返回 (dwCurrentState, dwProcessId)。
+        ///
+        /// 没有顺带返回「是否共享宿主」：`dwServiceType` 的
+        /// SERVICE_WIN32_SHARE_PROCESS 位在本机上实测不可信（MySQL84、Spooler 这类
+        /// 独占进程服务也带该位，RpcSs 反而不带），拿它过滤会把正常服务误判成测不到。
+        /// 是不是 svchost 承载，交给采样方按进程名判。
+        pub fn query(service_name: &str) -> Option<(u32, u32)> {
+            let name = wide(service_name);
+            let mut st: ServiceStatusProcess = unsafe { std::mem::zeroed() };
+            let mut needed: u32 = 0;
+            unsafe {
+                let scm = OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT);
+                if scm.is_null() {
+                    return None;
+                }
+                let svc = OpenServiceW(scm, name.as_ptr(), SERVICE_QUERY_STATUS);
+                CloseHandle(scm);
+                if svc.is_null() {
+                    return None;
+                }
+                let ok = QueryServiceStatusEx(
+                    svc,
+                    SC_STATUS_PROCESS_INFO,
+                    &mut st as *mut ServiceStatusProcess as *mut u8,
+                    std::mem::size_of::<ServiceStatusProcess>() as u32,
+                    &mut needed,
+                );
+                CloseHandle(svc);
+                if ok == 0 {
+                    return None;
+                }
+            }
+            Some((st.dwCurrentState, st.dwProcessId))
+        }
+    }
+
+    pub fn status_full(service_name: &str) -> crate::drivers::ExtStatus {
+        let mut st = match ffi::query(service_name) {
+            Some((state, pid)) => crate::drivers::ExtStatus {
+                running: Some(state == STATE_RUNNING),
+                // 过渡态（START_PENDING 等）的进程号还是 0，不给
+                pid: if pid == 0 { None } else { Some(pid) },
+                metrics: None,
+            },
+            // FFI 失败（权限受限、非标准服务名等）回落 sc query：状态判定不能因为
+            // 顺带要 PID 就退化，那会让崩溃检测整条链路失效
+            None => crate::drivers::ExtStatus {
+                running: query_state(service_name).map(|st| st == STATE_RUNNING),
+                pid: None,
+                metrics: None,
+            },
+        };
+        if st.running != Some(true) {
+            st.pid = None;
+        }
+        st
+    }
+
     pub fn status_running(service_name: &str) -> Option<bool> {
-        query_state(service_name).map(|st| st == STATE_RUNNING)
+        status_full(service_name).running
     }
 
     pub fn stop_and_wait(service_name: &str, timeout: Duration) -> Result<bool, String> {
@@ -115,6 +220,60 @@ mod imp {
                     std::thread::sleep(Duration::from_millis(500));
                 }
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::status_full;
+
+        /// 查无此服务必须报「未知」而不是「已停止」：后者会让面板把探测失败当成服务崩了，
+        /// 进而对着一个可能根本存在的服务反复重启
+        #[test]
+        fn missing_service_is_unknown_not_stopped() {
+            let st = status_full("sp-definitely-not-a-real-service");
+            assert_eq!(st.running, None);
+            assert_eq!(st.pid, None);
+        }
+
+        /// RpcSs 每台 Windows 都在跑，且由 svchost 承载：验证状态与宿主进程号都读得对。
+        /// （共享宿主的过滤在采样侧，见 supervisor::is_shared_host）
+        #[test]
+        fn running_service_reports_host_pid() {
+            let st = status_full("RpcSs");
+            assert_eq!(st.running, Some(true), "FFI 读出的状态不对，调用链有问题");
+            let pid = st.pid.expect("运行中的服务应给出宿主 PID");
+            let name = process_name(pid);
+            assert!(
+                name.contains("svchost"),
+                "RpcSs 的宿主进程应是 svchost，实际是 {name}（PID {pid}）"
+            );
+        }
+
+        /// 独占进程型服务（Spooler = spoolsv.exe）必须给出真实存在的 PID，
+        /// 否则外部服务的资源占用又会退回恒为 0。
+        /// 该服务在部分 Windows 上被设为手动启动，未运行时只校验「状态查得通」。
+        #[test]
+        fn own_process_service_pid_resolves_to_that_process() {
+            let st = status_full("Spooler");
+            assert!(st.running.is_some(), "连状态都查不到，说明 FFI 调用失败");
+            if st.running != Some(true) {
+                eprintln!("Spooler 未运行（该机器上它是手动启动），跳过 PID 校验");
+                return;
+            }
+            let pid = st.pid.expect("独占进程型服务应给出宿主 PID");
+            let name = process_name(pid);
+            assert!(name.contains("spoolsv"), "PID {pid} 指向了别的进程: {name}");
+        }
+
+        fn process_name(pid: u32) -> String {
+            use sysinfo::{Pid, System};
+            let mut sys = System::new_all();
+            sys.refresh_processes();
+            sys.process(Pid::from_u32(pid))
+                .unwrap_or_else(|| panic!("PID {pid} 在进程表里找不到"))
+                .name()
+                .to_lowercase()
         }
     }
 }
@@ -207,6 +366,28 @@ mod imp {
         system.or(user)
     }
 
+    /// 单元的主进程号。未运行或查不到时 systemd 返回 0，一律折算成 None。
+    fn main_pid(user_scope: bool, service_name: &str) -> Option<u32> {
+        let out = run_at(user_scope, &["show", "-p", "MainPID", "--value", service_name]).ok()?;
+        let pid: u32 = out.trim().parse().ok()?;
+        (pid > 0).then_some(pid)
+    }
+
+    pub fn status_full(service_name: &str) -> crate::drivers::ExtStatus {
+        let running = status_running(service_name);
+        // 只在确实运行时才多问一次 PID（--value 需要 systemd 230+，发行版早已普及）
+        let pid = if running == Some(true) {
+            main_pid(false, service_name).or_else(|| main_pid(true, service_name))
+        } else {
+            None
+        };
+        crate::drivers::ExtStatus {
+            running,
+            pid,
+            metrics: None,
+        }
+    }
+
     pub fn stop_and_wait(service_name: &str, timeout: Duration) -> Result<bool, String> {
         stop(service_name)?;
         let start = Instant::now();
@@ -284,6 +465,16 @@ mod imp {
             }
         }
         s.lines().any(|l| l.trim().starts_with("state = running"))
+    }
+
+    /// 同一个 `pid = N` 字段，未启动时是 0。running 判定早就在读它，只是没往外传，
+    /// 所以 PID 不需要额外一次 launchctl 调用。
+    fn parse_pid(s: &str) -> Option<u32> {
+        s.lines()
+            .map(str::trim)
+            .find_map(|t| t.strip_prefix("pid = "))
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .filter(|p| *p > 0)
     }
 
     /// `launchctl print-disabled <dom>` 输出里查该 label 是否被禁用。
@@ -377,6 +568,25 @@ mod imp {
             return Some(false);
         }
         Some(String::from_utf8_lossy(&out.stdout).contains("PID"))
+    }
+
+    pub fn status_full(service_name: &str) -> crate::drivers::ExtStatus {
+        let target = format!("{}/{}", domain(), service_name);
+        if let Ok(out) = run(&["print", &target]) {
+            let pid = parse_pid(&out);
+            return crate::drivers::ExtStatus {
+                running: Some(parse_running(&out)),
+                pid,
+                metrics: None,
+            };
+        }
+        // 系统域回落路径只报状态：`launchctl list` 的 PID 列对已加载未启动的 job 是 "-"，
+        // 拿它当 PID 采样会读到别家的进程，不如留空
+        crate::drivers::ExtStatus {
+            running: status_running(service_name),
+            pid: None,
+            metrics: None,
+        }
     }
 
     pub fn stop_and_wait(service_name: &str, timeout: Duration) -> Result<bool, String> {

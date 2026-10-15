@@ -26,6 +26,10 @@ interface Props {
   onChanged: () => void;
 }
 
+// 后端拿不到宿主进程时给 null（共享宿主服务、macOS 上的容器），显示「—」而不是 0，
+// 不把「测不到」伪装成「没占用」
+const metric = (v: number | null, unit: string) => (v === null ? "—" : `${v.toFixed(0)}${unit}`);
+
 export default function ServiceCard({
   svc,
   selected,
@@ -65,8 +69,8 @@ export default function ServiceCard({
         {svc.pid ? <span>PID {svc.pid}</span> : null}
         {running && (
           <>
-            <span>CPU {svc.cpu.toFixed(0)}%</span>
-            <span>MEM {svc.memMb.toFixed(0)}MB</span>
+            <span>CPU {metric(svc.cpu, "%")}</span>
+            <span>MEM {metric(svc.memMb, "MB")}</span>
           </>
         )}
       </div>

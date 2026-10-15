@@ -64,8 +64,9 @@ export interface ServiceView {
   state: State;
   desired: Desired;
   pid: number | null;
-  cpu: number;
-  memMb: number;
+  /** null = 测不到（外部驱动拿不到宿主进程），界面显示「—」而不是 0 */
+  cpu: number | null;
+  memMb: number | null;
   lastError: string | null;
   configOk: boolean;
 }

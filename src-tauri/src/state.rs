@@ -64,9 +64,14 @@ pub struct Runtime {
     pub tail_join: Option<std::thread::JoinHandle<()>>,
     /// 该服务唯一的日志写入端（按天 + 按字节滚动都在它内部判）
     pub sink: Option<Sink>,
-    /// 最近一次采样的资源占用（supervisor 每 tick 刷新）
-    pub cpu: f32,
-    pub mem_mb: f32,
+    /// 最近一次采样的资源占用（supervisor 每 tick 刷新）。
+    /// None = 测不到（外部驱动拿不到宿主进程、或进程已消失），UI 显示「—」而不是 0。
+    pub cpu: Option<f32>,
+    pub mem_mb: Option<f32>,
+    /// 外部驱动（系统服务）探测回来的宿主进程号，供下一拍按进程树采样
+    pub ext_pid: Option<u32>,
+    /// 外部驱动（Docker）自己算好的 (cpu%, mem MB)，优先于按 PID 采样
+    pub ext_metrics: Option<(f32, f32)>,
     /// spec 解密/解析是否成功（启动时算一次并缓存，避免每轮轮询重复 DPAPI 解密）
     pub config_ok: bool,
     /// 进入 Running 的时间戳（毫秒），用于"稳定运行一段时间后清零重试计数"
@@ -89,18 +94,25 @@ impl Runtime {
             tail_stop: None,
             tail_join: None,
             sink: None,
-            cpu: 0.0,
-            mem_mb: 0.0,
+            cpu: None,
+            mem_mb: None,
+            ext_pid: None,
+            ext_metrics: None,
             config_ok: true,
             running_since: 0,
         }
     }
 
-    /// 面板"看见"的进程号：自己 spawn 的优先，其次是接管的。UI 与事件都取这个。
+    /// 面板"看见"的进程号：自己 spawn 的优先，其次是接管的，最后是外部驱动探测回来的宿主
+    /// 进程号（只为展示与采样，面板并不拥有它，不能拿它去结束进程）。
     pub fn observed_pid(&self) -> Option<u32> {
         match &self.live {
             Some(l) => Some(l.pid),
-            None => self.adopted.as_ref().map(|a| a.pid),
+            None => self
+                .adopted
+                .as_ref()
+                .map(|a| a.pid)
+                .or(self.ext_pid),
         }
     }
 }

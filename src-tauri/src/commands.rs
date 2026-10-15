@@ -31,8 +31,8 @@ pub fn list_services(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<Servi
                 state: rt.map(|r| r.state).unwrap_or(State::Stopped),
                 desired: rt.map(|r| r.desired).unwrap_or(Desired::Stopped),
                 pid: rt.and_then(|r| r.observed_pid()),
-                cpu: rt.map(|r| r.cpu).unwrap_or(0.0),
-                mem_mb: rt.map(|r| r.mem_mb).unwrap_or(0.0),
+                cpu: rt.and_then(|r| r.cpu),
+                mem_mb: rt.and_then(|r| r.mem_mb),
                 last_error: rt.and_then(|r| r.last_error.clone()),
                 config_ok: rt.map(|r| r.config_ok).unwrap_or(true),
             }
