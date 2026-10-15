@@ -9,6 +9,19 @@ use crate::winjob::Job;
 #[cfg(windows)]
 pub use crate::winjob::Job as JobHandle;
 
+/// Windows：让 sc/docker/cmd 这类辅助命令不弹控制台窗口。
+/// 打包版是 GUI 进程、自己没有控制台，spawn 子进程时默认会各开一个新控制台窗口
+/// 再随退出销毁——监督线程每轮都查询，用户看到的就是屏幕不停闪黑框。
+pub fn hide_window(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    #[cfg(not(windows))]
+    let _ = cmd;
+}
+
 /// unix：向子进程所在**进程组**发信号（负 pid），回收它派生的整棵进程树。
 /// 面板 spawn 时用 process_group(0) 让 pgid == 子进程 pid，故 kill(-pid) 命中整组。
 /// force=false 发 SIGTERM（优雅），true 发 SIGKILL（强杀）。用 /bin/kill 避免引入 libc 依赖。
