@@ -46,6 +46,9 @@ pub struct Runtime {
     pub fail_streak: u32,
     /// 下一次允许重启的时间戳（unix 毫秒），实现指数退避
     pub next_attempt_at: i64,
+    /// 下一次健康探测的时间戳（unix 毫秒），按 spec.healthcheck.interval_secs 排期。
+    /// 0 表示立刻可探（刚启动、或该服务本轮还没排过程）。
+    pub next_health_at: i64,
     /// spec 快照，重启时不需要重查 DB
     pub spec: ServiceSpec,
     pub live: Option<LiveProc>,
@@ -87,6 +90,7 @@ impl Runtime {
             unhealthy_streak: 0,
             fail_streak: 0,
             next_attempt_at: 0,
+            next_health_at: 0,
             spec,
             live: None,
             adopted: None,

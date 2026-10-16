@@ -139,7 +139,7 @@ npm run tauri build
 | 进程/系统 | 原生 `std::process` + Windows Job Object / unix 进程组；`sysinfo` 采资源，外部服务的宿主进程号走 `QueryServiceStatusEx` / `systemctl show -p MainPID` / `launchctl print`，容器指标走 `docker stats` |
 | 关键库 | `chrono` `uuid` `encoding_rs` `base64`；插件 `autostart` `single-instance` `dialog` |
 
-配置与数据存放：`%APPDATA%\com.local.servicepanel\`（Windows）下 `data/panel.db` 与 `logs/<服务id>/*.log`。
+配置与数据存放：Tauri 的 `app_data_dir`，即 Windows `%APPDATA%\com.local.servicepanel\`、macOS `~/Library/Application Support/com.local.servicepanel/`、Linux `~/.local/share/com.local.servicepanel/`；下面是 `data/panel.db` 与 `logs/<服务id>/*.log`。
 
 ---
 
@@ -188,6 +188,14 @@ service-panel/
 - **Python 日志中文乱码**：输出编码选"自动"，或给服务加环境变量 `PYTHONUTF8=1`。
 - **conda 服务起不来**：不要用 `conda activate`，直接用环境里的 `python.exe` 绝对路径。
 - **偶尔突然退出（exit code 0xe0000008）**：崩溃现场已写入 `%APPDATA%\com.local.servicepanel\panic.log`，看它定位真因。
+- **想确认「停止有没有等够宽限期」「服务是谁自己起来的」**：进程型服务的日志会自证 ——
+  `[panel] 优雅停止：请求进程退出，最多等待 N 秒` 后必跟 `进程已退出，用时 X.X 秒`
+  或 `N 秒内进程未退出，已强杀`；被面板拉起时一定署名 `[panel] 自动重启：退避到期（第 N 次…）`
+  或 `[panel] 面板启动自启`。两行都没有，就不是面板干的（三平台同一条日志路径，见上）。
+- **优雅停止超时对哪些服务真生效**：只有「进程」型完整生效；「系统服务」下限被抬到 30 秒且
+  超时只报错不补杀（macOS 的实际宽限由 plist `ExitTimeOut` 决定）；Docker 容器目前没把秒数
+  传给 `docker stop -t`，仍按 Docker 默认 10 秒。
+- **健康检查「间隔(秒)」**：按填的值排期（填 0 兜底 1 秒），判定不健康需要 `间隔 × 连续失败阈值` 秒。
 - **跨平台**：核心功能三平台可用；Windows 为完整支持目标，Linux/macOS 的进程树回收与服务驱动为跨平台实现（首次请在真机 `cargo build` 验证）。
 
 ---

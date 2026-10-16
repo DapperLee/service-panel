@@ -125,7 +125,11 @@ fn takeover_and_autostart(state: &Arc<AppState>) {
     let enabled_ids = enabled_ids(state);
     for id in autostart {
         if enabled_ids.contains(&id) {
-            let _ = manager::start(state, &id);
+            // 只在真的拉起来之后署名「自启」：提前写日志会替这个服务建出日志目录，
+            // 而启不动的服务（空命令/坏配置）不该留下任何副作用
+            if manager::start(state, &id).is_ok() {
+                manager::log_sys(state, &id, "[panel] 面板启动自启");
+            }
             thread::sleep(Duration::from_millis(300)); // 顺序错开，避免端口抢占
         }
     }
@@ -261,10 +265,15 @@ fn tick(state: &Arc<AppState>, sys: &System) {
             }
 
             // 4) 采集健康探测任务（阻塞 I/O，锁外并行做）
+            //    排期按 spec 里的「间隔(秒)」，不是每 tick：以前后端从不读这个字段，
+            //    填 10 秒也照样 2 秒探一次，command 型探测等于每 2 秒起一个子进程。
             if rt.state == State::Running
                 && rt.spec.healthcheck.kind != crate::types::HealthKind::None
+                && now >= rt.next_health_at
             {
                 health_jobs.push((id.clone(), rt.spec.healthcheck.clone()));
+                let every_ms = rt.spec.healthcheck.interval_secs.max(1) as i64 * 1000;
+                rt.next_health_at = now + every_ms;
             }
         }
     }
@@ -405,6 +414,21 @@ fn tick(state: &Arc<AppState>, sys: &System) {
     }
     // 锁外执行重启
     for id in to_restart {
+        // 「谁把它拉起来的」必须落到服务自己的日志里：mac 上反馈「停止后自己又起来了」，
+        // 光看状态变 Running 分不清是自动重启、启动自启还是用户点的
+        let why = {
+            let rts = state.runtimes.lock().unwrap();
+            rts.get(&id).map(|r| {
+                format!(
+                    "[panel] 自动重启：退避到期（第 {} 次尝试，上次原因：{}）",
+                    r.fail_streak,
+                    r.last_error.as_deref().unwrap_or("未记录")
+                )
+            })
+        };
+        if let Some(why) = why {
+            manager::log_sys(state, &id, &why);
+        }
         if let Err(e) = manager::start(state, &id) {
             // 启动失败（多为“该服务正在执行其它操作”锁占用）：重新排期，别卡死不再拉
             let now = now_ms();
@@ -508,6 +532,102 @@ fn sample_tree(
         }
     }
     Some((cpu, mem_bytes as f32 / (1024.0 * 1024.0)))
+}
+
+#[cfg(test)]
+mod probe_schedule {
+    use super::tick;
+    use crate::state::{AppState, Runtime};
+    use crate::types::{Desired, DriverKind, HealthCheck, HealthKind, ServiceSpec, State};
+    use std::sync::Arc;
+    use sysinfo::System;
+
+    fn state_with(spec: ServiceSpec) -> Arc<AppState> {
+        let state = Arc::new(AppState::new(
+            rusqlite::Connection::open_in_memory().unwrap(),
+            std::env::temp_dir(),
+        ));
+        state.runtimes.lock().unwrap().insert(
+            "h".to_string(),
+            Runtime {
+                state: State::Running,
+                desired: Desired::Running,
+                ..Runtime::new(spec)
+            },
+        );
+        state
+    }
+
+    fn streak_and_next(state: &Arc<AppState>) -> (u32, i64) {
+        let rts = state.runtimes.lock().unwrap();
+        let rt = rts.get("h").unwrap();
+        (rt.unhealthy_streak, rt.next_health_at)
+    }
+
+    /// 健康探测按「间隔(秒)」排期：间隔设 1 小时时，连续两拍只该探一次。
+    /// 用 Command 驱动 + 不 spawn 真实进程，是为了避开真实服务是否存在的机器差异；
+    /// 探测目标是关着的端口，必然失败，于是「探了几次」直接体现在 unhealthy_streak 上。
+    #[test]
+    fn probe_honours_interval_secs() {
+        let spec = ServiceSpec {
+            driver: DriverKind::Command,
+            healthcheck: HealthCheck {
+                kind: HealthKind::Tcp,
+                target: "127.0.0.1:1".to_string(),
+                interval_secs: 3600,
+                unhealthy_threshold: 3,
+                ..HealthCheck::default()
+            },
+            ..ServiceSpec::default()
+        };
+        let state = state_with(spec);
+
+        let mut sys = System::new_all();
+        tick(&state, &sys);
+        let (after_first, scheduled) = streak_and_next(&state);
+        assert_eq!(after_first, 1, "第一拍没探：健康检查链路断了");
+        assert!(
+            scheduled > chrono::Utc::now().timestamp_millis(),
+            "探测没排到下个间隔，interval_secs 仍然没生效"
+        );
+
+        sys.refresh_processes();
+        tick(&state, &sys);
+        tick(&state, &sys);
+        let (after_more, _) = streak_and_next(&state);
+        assert_eq!(
+            after_more, after_first,
+            "间隔内又探了 {after_more} 次（应为 1 次）"
+        );
+    }
+
+    /// 间隔填 0 不能变成「每 tick 狂探」，至少隔一秒。
+    #[test]
+    fn zero_interval_falls_back_to_one_second() {
+        let spec = ServiceSpec {
+            driver: DriverKind::Command,
+            healthcheck: HealthCheck {
+                kind: HealthKind::Tcp,
+                target: "127.0.0.1:1".to_string(),
+                interval_secs: 0,
+                unhealthy_threshold: 9,
+                ..HealthCheck::default()
+            },
+            ..ServiceSpec::default()
+        };
+        let state = state_with(spec);
+        let sys = System::new_all();
+        // 起点时间必须在 tick 之前取：探测本身要花时间，之后再读 now 会显得
+        // 「排到了过去」，那是测试的时钟取错了，不是排期错了
+        let t0 = chrono::Utc::now().timestamp_millis();
+        tick(&state, &sys);
+        let (_streak, scheduled) = streak_and_next(&state);
+        let waited = scheduled - t0;
+        assert!(
+            (1000..=5000).contains(&waited),
+            "间隔 0 应排到约 1 秒后，实际排到 tick 起点后 {waited}ms"
+        );
+    }
 }
 
 #[cfg(all(test, windows))]

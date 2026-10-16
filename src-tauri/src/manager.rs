@@ -174,6 +174,8 @@ fn start_impl(state: &Arc<AppState>, id: &str) -> Result<(), String> {
                     rt.unhealthy_streak = 0;
                     rt.fail_streak = 0;
                     rt.next_attempt_at = 0;
+                    // 排期也归零：刚起来的服务下一拍就该探一次，不该沿用停机前的时间点
+                    rt.next_health_at = 0;
                     rt.running_since = chrono::Utc::now().timestamp_millis();
                 }
             }
@@ -191,7 +193,7 @@ fn start_impl(state: &Arc<AppState>, id: &str) -> Result<(), String> {
     }
 }
 
-fn log_sys(state: &Arc<AppState>, id: &str, msg: &str) {
+pub(crate) fn log_sys(state: &Arc<AppState>, id: &str, msg: &str) {
     // 复用 Runtime 里缓存的唯一写入端：不再每条系统消息都 open 一次文件
     if let (Some(emitter), Some(sink)) = (state.current_emitter(), state.log_sink(id)) {
         logs::system_message(msg, id, &emitter, &sink);
@@ -221,12 +223,18 @@ fn command_stop(state: &Arc<AppState>, id: &str, timeout_secs: u64) {
         kill_guard(&mut live);
         #[cfg(unix)]
         let pid = live.child.id();
-        let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+        let grace = timeout_secs.max(1);
+        // 把宽限期写进服务自己的日志：mac/linux 上「停止没等够就死了/根本没等」这类
+        // 反馈，靠这行和下面的耗时行就能判，不用用户自证
+        log_sys(state, id, &format!("[panel] 优雅停止：请求进程退出，最多等待 {grace} 秒"));
+        let t0 = Instant::now();
+        let deadline = t0 + Duration::from_secs(grace);
 
         // unix：先向整个进程组发 SIGTERM（Linux 上子进程也会因 PDEATHSIG 感知父退出）
         #[cfg(unix)]
         crate::drivers::command::kill_group(pid, false);
 
+        let mut forced = false;
         loop {
             match live.child.try_wait() {
                 Ok(Some(_)) => break,
@@ -236,6 +244,7 @@ fn command_stop(state: &Arc<AppState>, id: &str, timeout_secs: u64) {
                         crate::drivers::command::kill_group(pid, true);
                         let _ = live.child.kill();
                         let _ = live.child.wait();
+                        forced = true;
                         break;
                     }
                     std::thread::sleep(Duration::from_millis(200));
@@ -244,9 +253,20 @@ fn command_stop(state: &Arc<AppState>, id: &str, timeout_secs: u64) {
                     #[cfg(unix)]
                     crate::drivers::command::kill_group(pid, true);
                     let _ = live.child.kill();
+                    forced = true;
                     break;
                 }
             }
+        }
+        let took = t0.elapsed().as_secs_f32();
+        if forced {
+            log_sys(
+                state,
+                id,
+                &format!("[panel] {grace} 秒内进程未退出，已强杀（实际用时 {took:.1} 秒）"),
+            );
+        } else {
+            log_sys(state, id, &format!("[panel] 进程已退出，用时 {took:.1} 秒"));
         }
         // Windows: 离开作用域 drop(job) -> CloseHandle -> Job Object 连带回收整棵进程树
         // unix: 上面已 kill_group 回收；Child drop 不影响已被信号的进程
@@ -474,6 +494,86 @@ fn signal_group(live: &LiveProc, force: bool) {
     #[cfg(windows)]
     {
         let _ = (live, force);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use crate::drivers::command;
+    use crate::logs::LogEmitter;
+    use crate::state::LiveProc;
+
+    fn read_logs(dir: &std::path::Path) -> String {
+        let mut all = String::new();
+        for day in std::fs::read_dir(dir).unwrap() {
+            for shard in std::fs::read_dir(day.unwrap().path()).unwrap() {
+                let p = shard.unwrap().path();
+                if p.extension().and_then(|e| e.to_str()) == Some("log") {
+                    all.push_str(&std::fs::read_to_string(&p).unwrap());
+                }
+            }
+        }
+        all
+    }
+
+    /// 「优雅停止超时」必须真的等满 spec 里的秒数再强杀，并把这两行写进服务日志。
+    /// Windows 上 ping 不会响应退出请求，正好走满超时；用户在 Mac 上就是靠这两行
+    /// 判「有没有等」的，所以这里把它钉住。
+    #[test]
+    fn command_stop_waits_the_configured_grace_period() {
+        let dir = std::env::temp_dir().join(format!("sp-stop-{}", uuid::Uuid::new_v4()));
+        let state = Arc::new(AppState::new(
+            rusqlite::Connection::open_in_memory().unwrap(),
+            dir.clone(),
+        ));
+        let spec = ServiceSpec {
+            driver: DriverKind::Command,
+            command: "cmd".to_string(),
+            args: vec!["/C".to_string(), "ping -n 60 127.0.0.1 > nul".to_string()],
+            stop_timeout_secs: 2,
+            ..ServiceSpec::default()
+        };
+        state
+            .runtimes
+            .lock()
+            .unwrap()
+            .insert("s".to_string(), Runtime::new(spec.clone()));
+
+        let emitter: LogEmitter = Arc::new(|_| {});
+        *state.emitter.lock().unwrap() = Some(emitter.clone());
+        let sink = state.log_sink("s").expect("日志写入端应可用");
+        let spawned = command::spawn(&spec, "s", sink, emitter).unwrap();
+        {
+            let mut rts = state.runtimes.lock().unwrap();
+            let rt = rts.get_mut("s").unwrap();
+            rt.state = State::Running;
+            rt.desired = Desired::Running;
+            rt.live = Some(LiveProc {
+                child: spawned.child,
+                pid: spawned.pid,
+                job: spawned.job,
+            });
+        }
+
+        let t0 = Instant::now();
+        stop(&state, "s").unwrap();
+        let took = t0.elapsed();
+        assert!(
+            took >= Duration::from_secs(2) && took < Duration::from_secs(8),
+            "没等满宽限期或等过头：实际 {took:?}"
+        );
+
+        let text = read_logs(&dir);
+        assert!(
+            text.contains("[panel] 优雅停止：请求进程退出，最多等待 2 秒"),
+            "日志里没有等待声明：{text}"
+        );
+        assert!(
+            text.contains("秒内进程未退出，已强杀"),
+            "日志里没有强杀结论：{text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
