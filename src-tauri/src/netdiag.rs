@@ -146,6 +146,29 @@ pub fn listener_pid(port: u16) -> Option<u32> {
         .map(|l| l.pid)
 }
 
+/// 端口是否空闲：用 bind 测试最准（能捕获监听/占用/TIME_WAIT 等各种占用）。
+/// 测试后立即释放，存在极小的 TOCTOU 窗口，本机单用户场景可接受。
+pub fn is_port_free(port: u16) -> bool {
+    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+/// 从 start 往上找最多 tries 个端口里的第一个空闲端口。
+pub fn find_free_port(start: u16, tries: u16) -> Option<u16> {
+    (0..tries).find_map(|d| {
+        let p = start.checked_add(d)?;
+        if is_port_free(p) {
+            Some(p)
+        } else {
+            None
+        }
+    })
+}
+
+/// 把字符串里的 `{port}` 占位符替换为实际端口。
+pub fn resolve_port_token(s: &str, port: u16) -> String {
+    s.replace("{port}", &port.to_string())
+}
+
 /// 从健康检查 target 里抽端口：支持 "host:port"、"http(s)://host:port/p"，
 /// URL 省略端口时按方案取 80 / 443。抽不到返回 None。
 pub fn port_of(target: &str) -> Option<u16> {

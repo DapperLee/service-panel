@@ -67,6 +67,7 @@ export default function ServiceCard({
       <div className="meta">
         <span>{STATE_LABEL[svc.state]}</span>
         {svc.pid ? <span>PID {svc.pid}</span> : null}
+        {svc.chosenPort ? <span>端口 {svc.chosenPort}</span> : null}
         {running && (
           <>
             <span>CPU {metric(svc.cpu, "%")}</span>

@@ -49,6 +49,9 @@ export interface ServiceSpec {
   serviceName: string;
   container: string;
   logPath: string;
+  autoPort: boolean;
+  defaultPort: number;
+  portEnvKey: string;
   healthcheck: HealthCheck;
   restartPolicy: RestartPolicy;
   after: string[];
@@ -69,6 +72,7 @@ export interface ServiceView {
   memMb: number | null;
   lastError: string | null;
   configOk: boolean;
+  chosenPort: number | null;
 }
 
 export interface ServiceInput {
@@ -201,6 +205,9 @@ export function defaultSpec(): ServiceSpec {
     serviceName: "",
     container: "",
     logPath: "",
+    autoPort: false,
+    defaultPort: 0,
+    portEnvKey: "PORT",
     healthcheck: {
       kind: "none",
       target: "",

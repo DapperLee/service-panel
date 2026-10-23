@@ -25,6 +25,7 @@ function svc(
     memMb: null,
     lastError: null,
     configOk: over.configOk ?? true,
+    chosenPort: null,
     ...over,
   };
 }
@@ -122,7 +123,7 @@ export const devApi = {
   add: async (input: any) => {
     ensure();
     const id = `s${Math.random().toString(36).slice(2, 8)}`;
-    list.push({ ...input, id, state: "stopped", desired: "stopped", pid: null, cpu: null, memMb: null, lastError: null, configOk: true });
+    list.push({ ...input, id, state: "stopped", desired: "stopped", pid: null, cpu: null, memMb: null, lastError: null, configOk: true, chosenPort: null });
     return id;
   },
   update: async (input: any) => {

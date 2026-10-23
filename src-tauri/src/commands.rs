@@ -35,6 +35,7 @@ pub fn list_services(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<Servi
                 mem_mb: rt.and_then(|r| r.mem_mb),
                 last_error: rt.and_then(|r| r.last_error.clone()),
                 config_ok: rt.map(|r| r.config_ok).unwrap_or(true),
+                chosen_port: rt.and_then(|r| r.chosen_port),
             }
         })
         .collect();

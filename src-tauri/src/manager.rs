@@ -38,7 +38,8 @@ pub fn ensure_runtime(state: &Arc<AppState>, id: &str, spec: ServiceSpec, config
             // 已存在则刷新 spec/config_ok（编辑配置后）
             let was_broken = !rt.config_ok;
             let stale_err = rt.last_error.as_deref() == Some(crate::db::CONFIG_BROKEN_MSG);
-            rt.spec = spec;
+            rt.spec = spec.clone();
+            rt.spec_template = spec;
             rt.config_ok = config_ok;
             if config_ok {
                 if was_broken && stale_err {
@@ -66,14 +67,37 @@ fn get_spec(state: &Arc<AppState>, id: &str) -> Option<ServiceSpec> {
         .map(|r| r.spec.clone())
 }
 
-/// 取 spec 与「配置是否可用」标记（坏配置禁止启动，见 start_impl）
-fn get_spec_and_ok(state: &Arc<AppState>, id: &str) -> Option<(ServiceSpec, bool)> {
+/// 取原始 spec 模板（含 {port} 占位符）+ config_ok，用于每次启动重新解析端口
+fn get_template_and_ok(state: &Arc<AppState>, id: &str) -> Option<(ServiceSpec, bool)> {
     state
         .runtimes
         .lock()
         .unwrap()
         .get(id)
-        .map(|r| (r.spec.clone(), r.config_ok))
+        .map(|r| (r.spec_template.clone(), r.config_ok))
+}
+
+/// 把自动端口解析进 spec：替换 {port} 占位符并注入端口环境变量
+fn resolve_spec_port(spec: &ServiceSpec, port: u16) -> ServiceSpec {
+    use crate::netdiag;
+    let ps = port.to_string();
+    let mut s = spec.clone();
+    s.command = netdiag::resolve_port_token(&s.command, port);
+    s.args = s
+        .args
+        .iter()
+        .map(|a| netdiag::resolve_port_token(a, port))
+        .collect();
+    let mut env = std::collections::HashMap::new();
+    for (k, v) in s.env {
+        env.insert(k, netdiag::resolve_port_token(&v, port));
+    }
+    s.env = env;
+    s.healthcheck.target = netdiag::resolve_port_token(&s.healthcheck.target, port);
+    if !s.port_env_key.trim().is_empty() {
+        s.env.insert(s.port_env_key.trim().to_string(), ps);
+    }
+    s
 }
 
 fn set_desired(state: &Arc<AppState>, id: &str, desired: Desired) {
@@ -117,7 +141,8 @@ pub fn stop(state: &Arc<AppState>, id: &str) -> Result<(), String> {
 }
 
 fn start_impl(state: &Arc<AppState>, id: &str) -> Result<(), String> {
-    let (spec, config_ok) = get_spec_and_ok(state, id).ok_or("服务不存在")?;
+    // 从模板读，保证每次启动都重新解析 {port}（不被上一次解析结果污染）
+    let (mut spec, config_ok) = get_template_and_ok(state, id).ok_or("服务不存在")?;
 
     // 坏配置（解密/解析失败）的 spec 是空壳：命令为空时 command 驱动会回退到
     // `cmd /C ""`，而它能成功 spawn 并立刻退出，于是被当成「启动成功」，紧接着
@@ -130,6 +155,27 @@ fn start_impl(state: &Arc<AppState>, id: &str) -> Result<(), String> {
     // 空命令在创建日志目录之前就拒掉：启不动的服务不该留下任何副作用
     if spec.driver == DriverKind::Command {
         command::validate(&spec)?;
+    }
+
+    // 自动端口：默认端口空闲就用它，被占则往上找；解析出本次实际 spec
+    if spec.driver == DriverKind::Command && spec.auto_port && spec.default_port > 0 {
+        let chosen = if crate::netdiag::is_port_free(spec.default_port) {
+            spec.default_port
+        } else {
+            crate::netdiag::find_free_port(spec.default_port.saturating_add(1), 50).ok_or_else(
+                || format!("默认端口 {} 起连续 50 个端口都被占用，找不到空闲端口", spec.default_port),
+            )?
+        };
+        spec = resolve_spec_port(&spec, chosen);
+        let mut rts = state.runtimes.lock().unwrap();
+        if let Some(rt) = rts.get_mut(id) {
+            rt.spec = spec.clone();
+            rt.chosen_port = Some(chosen);
+        }
+    } else if let Some(rt) = state.runtimes.lock().unwrap().get_mut(id) {
+        // 非自动端口：用模板原样，清掉上次自动端口残留
+        rt.spec = spec.clone();
+        rt.chosen_port = None;
     }
 
     set_desired(state, id, Desired::Running);

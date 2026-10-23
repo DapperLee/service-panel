@@ -138,6 +138,16 @@ pub struct ServiceSpec {
     /// Docker 留空则用 `docker logs -f`，填了则尾随该文件。
     #[serde(default)]
     pub log_path: String,
+    // —— 自动端口 ——
+    /// 默认端口被占时，自动往上找一个空闲端口启动
+    #[serde(default)]
+    pub auto_port: bool,
+    /// 首选端口（被占则从它往上找空闲端口）
+    #[serde(default)]
+    pub default_port: u16,
+    /// 把选定的端口注入到该环境变量（很多服务读 PORT）；留空则不注入 env
+    #[serde(default = "default_port_env_key")]
+    pub port_env_key: String,
     // —— 通用 ——
     #[serde(default)]
     pub healthcheck: HealthCheck,
@@ -154,6 +164,9 @@ fn default_encoding() -> String {
 fn default_stop_timeout() -> u64 {
     10
 }
+fn default_port_env_key() -> String {
+    "PORT".to_string()
+}
 
 impl Default for ServiceSpec {
     fn default() -> Self {
@@ -168,6 +181,9 @@ impl Default for ServiceSpec {
             service_name: String::new(),
             container: String::new(),
             log_path: String::new(),
+            auto_port: false,
+            default_port: 0,
+            port_env_key: default_port_env_key(),
             healthcheck: HealthCheck::default(),
             restart_policy: RestartPolicy::default(),
             after: Vec::new(),
@@ -220,6 +236,9 @@ pub struct ServiceView {
     /// 列表会标红且导出会中止，避免把空配置当真实配置写进备份。
     #[serde(default = "default_true")]
     pub config_ok: bool,
+    /// 自动端口模式下本次实际选定的端口（非自动为 None）
+    #[serde(default)]
+    pub chosen_port: Option<u16>,
 }
 
 fn default_true() -> bool {

@@ -49,8 +49,13 @@ pub struct Runtime {
     /// 下一次健康探测的时间戳（unix 毫秒），按 spec.healthcheck.interval_secs 排期。
     /// 0 表示立刻可探（刚启动、或该服务本轮还没排过程）。
     pub next_health_at: i64,
-    /// spec 快照，重启时不需要重查 DB
+    /// spec 快照，重启时不需要重查 DB。自动端口模式下这是**已注入实际端口**的解析结果，
+    /// 供监督线程做健康检查直接用。原始模板（含 {port} 占位符）见 spec_template。
     pub spec: ServiceSpec,
+    /// 原始 spec 模板（含 {port} 占位符），每次启动据此重新解析端口
+    pub spec_template: ServiceSpec,
+    /// 自动端口模式本次选定的端口
+    pub chosen_port: Option<u16>,
     pub live: Option<LiveProc>,
     /// 面板重启后**接管**的进程：面板之外启动、但命令行与端口都指向本服务。
     /// 没有 Child 句柄，所以只能靠内核快照判存活；停止它的唯一手段是 drop 下面这个
@@ -91,7 +96,9 @@ impl Runtime {
             fail_streak: 0,
             next_attempt_at: 0,
             next_health_at: 0,
-            spec,
+            spec: spec.clone(),
+            spec_template: spec,
+            chosen_port: None,
             live: None,
             adopted: None,
             tail: None,

@@ -249,6 +249,45 @@ export default function AddServiceDialog({
                 />
               </div>
             </div>
+
+            <div className="field">
+              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="checkbox"
+                  style={{ width: "auto" }}
+                  checked={spec.autoPort}
+                  onChange={(e) => patch({ autoPort: e.target.checked })}
+                />
+                端口被占时自动换空闲端口
+              </label>
+              <div style={{ color: "var(--text-dim)", fontSize: 12, marginTop: 4 }}>
+                在命令/参数/健康检查里用 <code>{"{port}"}</code> 占位符，启动时会替换成实际端口；
+                同时把端口注入到下面的环境变量。
+              </div>
+            </div>
+            {spec.autoPort && (
+              <div className="row">
+                <div className="field">
+                  <label>首选端口</label>
+                  <input
+                    type="number"
+                    value={spec.defaultPort || ""}
+                    onChange={(e) =>
+                      patch({ defaultPort: Number(e.target.value) || 0 })
+                    }
+                    placeholder="8000"
+                  />
+                </div>
+                <div className="field">
+                  <label>端口环境变量名</label>
+                  <input
+                    value={spec.portEnvKey}
+                    onChange={(e) => patch({ portEnvKey: e.target.value })}
+                    placeholder="PORT"
+                  />
+                </div>
+              </div>
+            )}
           </>
         )}
 

@@ -165,6 +165,7 @@ fn row_to_view(
             Some(CONFIG_BROKEN_MSG.to_string())
         },
         config_ok,
+        chosen_port: None,
     }
 }
 
