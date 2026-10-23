@@ -8,6 +8,7 @@ import SettingsDialog from "./components/SettingsDialog";
 import GroupManagerDialog from "./components/GroupManagerDialog";
 import DependencyGraph from "./components/DependencyGraph";
 import EventsDialog from "./components/EventsDialog";
+import TasksView from "./components/TasksView";
 
 // 每个服务在内存里保留的日志行数上限（与 LogConsole 的显示上限一致）
 const MAX_LOG_LINES = 2000;
@@ -24,6 +25,7 @@ export default function App() {
   const [groupMgrOpen, setGroupMgrOpen] = useState(false);
   const [graphOpen, setGraphOpen] = useState(false);
   const [eventsOpen, setEventsOpen] = useState(false);
+  const [view, setView] = useState<"services" | "tasks">("services");
   const [notAdmin, setNotAdmin] = useState(false);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -151,30 +153,50 @@ export default function App() {
     <div className="app">
       <div className="topbar">
         <h1>本地服务管理面板</h1>
+        <div className="viewswitch">
+          <button
+            className={view === "services" ? "active" : "ghost"}
+            onClick={() => setView("services")}
+          >
+            服务
+          </button>
+          <button
+            className={view === "tasks" ? "active" : "ghost"}
+            onClick={() => setView("tasks")}
+          >
+            任务
+          </button>
+        </div>
         <div className="summary">
           <span>
             {runningCount}/{services.length} 运行中
           </span>
         </div>
         <div className="spacer" />
-        <button disabled={busy} onClick={() => bulk(() => api.startAll())}>
-          全部启动
-        </button>
-        <button disabled={busy} onClick={() => bulk(() => api.stopAll())}>
-          全部停止
-        </button>
-        <button className="ghost" onClick={() => setGroupMgrOpen(true)}>
-          管理分组
-        </button>
-        <button className="ghost" onClick={() => setEventsOpen(true)}>
-          时间线
-        </button>
+        {view === "services" && (
+          <>
+            <button disabled={busy} onClick={() => bulk(() => api.startAll())}>
+              全部启动
+            </button>
+            <button disabled={busy} onClick={() => bulk(() => api.stopAll())}>
+              全部停止
+            </button>
+            <button className="ghost" onClick={() => setGroupMgrOpen(true)}>
+              管理分组
+            </button>
+            <button className="ghost" onClick={() => setEventsOpen(true)}>
+              时间线
+            </button>
+          </>
+        )}
         <button className="ghost" onClick={() => setSettingsOpen(true)}>
           设置
         </button>
-        <button className="primary" onClick={() => { setEditing(null); setDialogOpen(true); }}>
-          + 添加服务
-        </button>
+        {view === "services" && (
+          <button className="primary" onClick={() => { setEditing(null); setDialogOpen(true); }}>
+            + 添加服务
+          </button>
+        )}
       </div>
 
       {notAdmin && (
@@ -196,6 +218,8 @@ export default function App() {
         </div>
       )}
 
+      {view === "services" && (
+        <>
       {/* 分组标签栏 */}
       <div className="groupbar">
         <button
@@ -282,6 +306,16 @@ export default function App() {
           onClear={(id) => setLogs((p) => ({ ...p, [id]: [] }))}
         />
       </div>
+        </>
+      )}
+
+      {view === "tasks" && (
+        <TasksView
+          services={services}
+          logs={logs}
+          onClearLog={(id) => setLogs((p) => ({ ...p, [id]: [] }))}
+        />
+      )}
 
       {toast && <div className="toast">{toast}</div>}
 

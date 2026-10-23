@@ -246,3 +246,122 @@ pub struct ServiceInput {
     pub enabled: bool,
     pub spec: ServiceSpec,
 }
+
+// ============================ 一次性任务 ============================
+
+/// 任务变体：同一命令的一组预设参数（如 android / ios / release）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskVariant {
+    pub label: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+/// 任务配置（存 config_json，含 env，DPAPI 加密）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskConfig {
+    #[serde(default)]
+    pub command: String,
+    /// 无变体时的默认参数
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub cwd: String,
+    /// true 则经 shell 执行（npx、&&、管道等需要）；false 直接 spawn
+    #[serde(default)]
+    pub use_shell: bool,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default = "default_encoding")]
+    pub encoding: String,
+    #[serde(default)]
+    pub variants: Vec<TaskVariant>,
+    /// 运行前必须处于 Running 的服务 id（依赖服务）
+    #[serde(default)]
+    pub requires: Vec<String>,
+}
+
+impl Default for TaskConfig {
+    fn default() -> Self {
+        Self {
+            command: String::new(),
+            args: Vec::new(),
+            cwd: String::new(),
+            use_shell: false,
+            env: HashMap::new(),
+            encoding: default_encoding(),
+            variants: Vec::new(),
+            requires: Vec::new(),
+        }
+    }
+}
+
+/// 暴露给前端 + 存库的任务视图
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskView {
+    pub id: String,
+    pub name: String,
+    pub group: Option<String>,
+    pub config: TaskConfig,
+    #[serde(default = "default_true")]
+    pub config_ok: bool,
+}
+
+/// 任务运行状态
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskRunStatus {
+    Queued,
+    Running,
+    Success,
+    Failed,
+    Cancelled,
+}
+
+/// 一次运行记录
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRun {
+    pub id: String,
+    pub task_id: String,
+    pub task_name: String,
+    pub variant: Option<String>,
+    pub extra_args: String,
+    pub status: TaskRunStatus,
+    pub exit_code: Option<i32>,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub log_path: String,
+}
+
+/// 目录书签（一键打开终端/资源管理器）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Bookmark {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+}
+
+/// 新建/更新任务入参
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskInput {
+    pub id: Option<String>,
+    pub name: String,
+    pub group: Option<String>,
+    pub config: TaskConfig,
+}
+
+/// 队列内部：一次运行请求（不序列化）
+#[derive(Debug, Clone)]
+pub struct TaskRunRequest {
+    pub run_id: String,
+    pub config: TaskConfig,
+    pub variant_index: Option<usize>,
+    pub extra_args: Vec<String>,
+}

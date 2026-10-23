@@ -308,6 +308,12 @@ textarea:focus {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 18px;
+  /* 表单比 max-height 高时，「取消/保存」原本要滚到底才见得到，粘在可视底边常驻。
+     bottom 的 -20px 用来抵消 .modal 的 padding，让按钮贴住内边距外沿。 */
+  position: sticky;
+  bottom: -20px;
+  padding-top: 10px;
+  background: var(--bg-elev);
 }
 .section-title {
   margin: 16px 0 8px;
@@ -419,6 +425,60 @@ textarea:focus {
 }
 .dep-scroll svg {
   display: block;
+}
+
+/* 任务视图 */
+.viewswitch {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-left: 4px;
+}
+.viewswitch button {
+  border: none;
+  border-radius: 0;
+  background: var(--bg-elev-2);
+  color: var(--text-dim);
+  padding: 5px 16px;
+}
+.viewswitch button.active {
+  background: var(--accent);
+  color: #fff;
+}
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 15px;
+}
+.mono {
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.bookmark-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bookmark-row {
+  display: grid;
+  grid-template-columns: 120px 1fr auto auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 10px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.bookmark-row .mono {
+  color: var(--text-dim);
 }
 
 /* 提权横幅 */

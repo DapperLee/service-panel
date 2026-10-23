@@ -117,6 +117,78 @@ export interface ImportOutcome {
   stopped: number;
 }
 
+// ============================ 任务 ============================
+export interface TaskVariant {
+  label: string;
+  args: string[];
+}
+
+export interface TaskConfig {
+  command: string;
+  args: string[];
+  cwd: string;
+  useShell: boolean;
+  env: Record<string, string>;
+  encoding: string;
+  variants: TaskVariant[];
+  requires: string[];
+}
+
+export interface TaskView {
+  id: string;
+  name: string;
+  group: string | null;
+  config: TaskConfig;
+  configOk: boolean;
+}
+
+export type TaskRunStatus =
+  | "queued"
+  | "running"
+  | "success"
+  | "failed"
+  | "cancelled";
+
+export interface TaskRun {
+  id: string;
+  taskId: string;
+  taskName: string;
+  variant: string | null;
+  extraArgs: string;
+  status: TaskRunStatus;
+  exitCode: number | null;
+  startedAt: number;
+  finishedAt: number | null;
+  durationMs: number | null;
+  logPath: string;
+}
+
+export interface TaskInput {
+  id?: string | null;
+  name: string;
+  group: string | null;
+  config: TaskConfig;
+}
+
+export interface Bookmark {
+  id: string;
+  name: string;
+  path: string;
+}
+
+export function defaultTaskConfig(): TaskConfig {
+  return {
+    command: "",
+    args: [],
+    cwd: "",
+    useShell: true,
+    env: {},
+    encoding: "auto",
+    variants: [],
+    requires: [],
+  };
+}
+
 export function defaultSpec(): ServiceSpec {
   return {
     driver: "command",

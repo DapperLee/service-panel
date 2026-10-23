@@ -1,7 +1,7 @@
 use crate::db;
 use crate::manager;
 use crate::state::AppState;
-use crate::types::{Desired, ServiceInput, ServiceView, State};
+use crate::types::{Desired, ServiceInput, ServiceView, State, TaskInput};
 use std::sync::Arc;
 use tauri_plugin_autostart::ManagerExt;
 
@@ -275,6 +275,210 @@ pub fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String>
 #[tauri::command]
 pub fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
+}
+
+// ============================ 任务 ============================
+
+#[tauri::command]
+pub fn list_tasks(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<crate::types::TaskView>, String> {
+    let conn = state.db.lock().unwrap();
+    db::list_tasks(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn add_task(state: tauri::State<'_, Arc<AppState>>, input: TaskInput) -> Result<String, String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let conn = state.db.lock().unwrap();
+    db::insert_task(&conn, &id, &input.name, input.group.as_deref(), &input.config)
+        .map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub fn update_task(state: tauri::State<'_, Arc<AppState>>, input: TaskInput) -> Result<(), String> {
+    let id = input.id.clone().ok_or("缺少 id")?;
+    let conn = state.db.lock().unwrap();
+    db::update_task(&conn, &id, &input.name, input.group.as_deref(), &input.config)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_task(state: tauri::State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    let conn = state.db.lock().unwrap();
+    db::delete_task(&conn, &id).map_err(|e| e.to_string())
+}
+
+/// 排队运行一个任务。返回 run_id（也作为前端日志流的 key）。
+#[tauri::command]
+pub fn run_task(
+    state: tauri::State<'_, Arc<AppState>>,
+    task_id: String,
+    variant_index: Option<usize>,
+    extra_args: String,
+) -> Result<String, String> {
+    let task = {
+        let conn = state.db.lock().unwrap();
+        db::list_tasks(&conn)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|t| t.id == task_id)
+    }
+    .ok_or("任务不存在")?;
+    if !task.config_ok {
+        return Err("任务配置解析失败，无法运行".to_string());
+    }
+    let variant_label = match variant_index {
+        Some(i) => task.config.variants.get(i).map(|v| v.label.clone()),
+        None => None,
+    };
+    let parsed_extra: Vec<String> = extra_args
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp();
+    let run = crate::types::TaskRun {
+        id: run_id.clone(),
+        task_id: task_id.clone(),
+        task_name: task.name.clone(),
+        variant: variant_label,
+        extra_args: extra_args.trim().to_string(),
+        status: crate::types::TaskRunStatus::Queued,
+        exit_code: None,
+        started_at: now,
+        finished_at: None,
+        duration_ms: None,
+        log_path: String::new(),
+    };
+    {
+        let conn = state.db.lock().unwrap();
+        db::insert_task_run(&conn, &run).map_err(|e| e.to_string())?;
+    }
+    let req = crate::types::TaskRunRequest {
+        run_id: run_id.clone(),
+        config: task.config,
+        variant_index,
+        extra_args: parsed_extra,
+    };
+    {
+        let tx = state.task_tx.lock().unwrap();
+        match tx.as_ref() {
+            Some(tx) => tx.send(req).map_err(|_| "任务队列不可用".to_string())?,
+            None => return Err("任务队列未就绪".to_string()),
+        }
+    }
+    Ok(run_id)
+}
+
+/// 取消当前运行的任务（打进程树）。仅对正在运行的那个有效。
+#[tauri::command]
+pub fn cancel_task_run(state: tauri::State<'_, Arc<AppState>>, run_id: String) -> Result<(), String> {
+    let current = state.task_current.lock().unwrap().clone();
+    if current.as_deref() == Some(run_id.as_str()) {
+        state.task_cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    } else {
+        Err("该运行不在执行中，无法取消".to_string())
+    }
+}
+
+#[tauri::command]
+pub fn list_task_runs(
+    state: tauri::State<'_, Arc<AppState>>,
+    limit: i64,
+) -> Result<Vec<crate::types::TaskRun>, String> {
+    let conn = state.db.lock().unwrap();
+    db::list_task_runs(&conn, limit.max(1)).map_err(|e| e.to_string())
+}
+
+/// 在资源管理器打开目录
+#[tauri::command]
+pub fn open_in_explorer(path: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("explorer").arg(&path).spawn();
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(&path).spawn();
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
+        Ok(())
+    }
+    #[cfg(not(any(windows, target_os = "macos", unix)))]
+    {
+        let _ = path;
+        Err("不支持的平台".to_string())
+    }
+}
+
+/// 在该目录打开系统终端
+#[tauri::command]
+pub fn open_in_terminal(path: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        // 优先 Windows Terminal，回退 cmd
+        let wt = std::process::Command::new("wt")
+            .args(["-d", &path])
+            .spawn();
+        if wt.is_ok() {
+            return Ok(());
+        }
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "cmd", "/K", &format!("cd /d {}", path)])
+            .spawn();
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .args(["-a", "Terminal", &path])
+            .spawn();
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("x-terminal-emulator")
+            .current_dir(&path)
+            .spawn();
+        Ok(())
+    }
+    #[cfg(not(any(windows, target_os = "macos", unix)))]
+    {
+        let _ = path;
+        Err("不支持的平台".to_string())
+    }
+}
+
+// ============================ 书签 ============================
+
+#[tauri::command]
+pub fn list_bookmarks(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<crate::types::Bookmark>, String> {
+    let conn = state.db.lock().unwrap();
+    db::list_bookmarks(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn add_bookmark(
+    state: tauri::State<'_, Arc<AppState>>,
+    name: String,
+    path: String,
+) -> Result<String, String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let conn = state.db.lock().unwrap();
+    db::insert_bookmark(&conn, &id, &name, &path).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub fn delete_bookmark(state: tauri::State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    let conn = state.db.lock().unwrap();
+    db::delete_bookmark(&conn, &id).map_err(|e| e.to_string())
 }
 
 /// 是否以管理员运行（非 Windows 恒返回 true，不影响功能）

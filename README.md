@@ -100,6 +100,11 @@ npm run tauri build
 
 要管 Windows 系统服务需管理员权限：开发时用**管理员终端**跑 `npm run tauri dev`。
 
+**只想看界面 / 调样式**（不编译 Rust、不起壳）：`npm run dev` 后浏览器打开 `http://localhost:5273`。
+`src/lib/api.ts` 在「DEV 构建 + 窗口没有 `__TAURI_INTERNALS__`」时自动切到 `src/lib/devPreview.ts`
+的假后端样本（含取不到指标、不健康、配置损坏等边界卡片），启停按钮与轮询照常生效。
+真壳与打包版两个条件都不成立，不会带进产品。
+
 ---
 
 ## 功能特性
@@ -110,6 +115,7 @@ npm run tauri build
 - **依赖拓扑一键启停**：给服务设依赖，分组按拓扑顺序"起一个、等它健康再起下一个"，停止逆序，并有 SVG 依赖图可视化。
 - **开机自启 + 托盘常驻**：登录后台自启、按依赖拉起勾选的服务；关闭窗口收进托盘。
 - **实时日志与观测**：stdout/stderr/Docker/文件尾随统一展示，支持关键字过滤、自动编码（UTF-8/GBK）、事件时间线、资源占用（按整棵进程树统计；系统服务与容器同样可测，仅当一个进程承载了多个服务时（如 Windows 的 svchost）无法拆分，显示「—」而不是把别家的占用算到它头上）。
+- **一次性任务运行器**：把常用构建/命令（`npx tauri android build`、`cargo build`、跑测试等）存成任务、绑定目录一键跑，实时看输出、留运行历史；支持变体（debug/release）+ 运行时追加参数、串行队列、取消（杀整棵进程树）、依赖服务检查、一键打开终端/资源管理器、目录书签。
 
 ---
 
@@ -153,9 +159,11 @@ service-panel/
     lib/               api（invoke/事件）、deps（拓扑）
     components/        ServiceCard / LogConsole / AddServiceDialog
                        GroupManagerDialog / SettingsDialog / DependencyGraph / EventsDialog
+                       TasksView / TaskDialog（一次性任务）
   src-tauri/src/       Rust 后端
     drivers/           command / winservice(systemd·launchd·sc) / docker
     manager.rs         启停编排 + 生命周期互斥锁
+    task.rs            一次性任务：串行队列 worker + 运行编排
     guard.rs           unix 看门狗：面板崩溃后由它 kill(-pgid) 兜底
     supervisor.rs      监督线程：崩溃检测、健康、重启退避、资源采样
     group.rs           分组拓扑排序（Kahn）+ 按序启停

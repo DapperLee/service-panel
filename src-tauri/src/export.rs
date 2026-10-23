@@ -189,3 +189,119 @@ pub fn import_from_file(
         stopped,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::DriverKind;
+    use std::collections::HashMap;
+
+    /// 真 SQLite 文件（要跑建表迁移），不是内存库——内存库没有 schema。
+    fn state() -> (Arc<AppState>, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("sp-export-{}", uuid::Uuid::new_v4()));
+        let conn = db::open(&dir).unwrap();
+        (Arc::new(AppState::new(conn, dir.clone())), dir)
+    }
+
+    fn spec_with_token(tok: &str) -> ServiceSpec {
+        let mut env = HashMap::new();
+        env.insert("TOKEN".to_string(), tok.to_string());
+        ServiceSpec {
+            driver: DriverKind::Command,
+            command: "python".to_string(),
+            env,
+            ..ServiceSpec::default()
+        }
+    }
+
+    /// 备份的本职工作：导出去、导入回，env 里的凭据必须逐字符回来。
+    /// 这条挂了等于用户恢复配置时静默拿到空 env，服务起不来还查不出原因。
+    #[test]
+    fn export_then_import_restores_env_values_verbatim() {
+        let (src, src_dir) = state();
+        {
+            let conn = src.db.lock().unwrap();
+            db::create_group(&conn, "g1", "分组一").unwrap();
+            db::insert_service(&conn, "s1", "服务一", Some("g1"), 1, true, &spec_with_token("abc-123"))
+                .unwrap();
+            db::insert_service(
+                &conn,
+                "s2",
+                "服务二",
+                None,
+                2,
+                false,
+                &spec_with_token("中文密钥 ±*/\"'"),
+            )
+            .unwrap();
+        }
+
+        let path = std::env::temp_dir().join(format!("sp-export-{}.json", uuid::Uuid::new_v4()));
+        let n = export_to_file(&src, path.to_str().unwrap()).unwrap();
+        assert_eq!(n, 2);
+
+        // 按设计导出文件是明文 JSON（文件头注释承诺的）；哪天改成加密导出，这条会逼着同步改文档
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("abc-123"), "导出文件应为可读明文，便于人工核对备份内容");
+
+        let (dst, dst_dir) = state();
+        let out = import_from_file(&dst, path.to_str().unwrap(), false).unwrap();
+        assert_eq!(
+            (out.services_added, out.services_skipped, out.groups_added),
+            (2, 0, 1)
+        );
+
+        let back = {
+            let conn = dst.db.lock().unwrap();
+            db::list_services(&conn).unwrap()
+        };
+        assert_eq!(back.len(), 2);
+        let s1 = back.iter().find(|s| s.id == "s1").unwrap();
+        assert_eq!(s1.spec.env.get("TOKEN").map(|s| s.as_str()), Some("abc-123"));
+        assert_eq!(s1.group_id.as_deref(), Some("g1"), "分组归属要跟着回来");
+        assert!(s1.enabled, "enabled 不能在 round-trip 里翻转");
+        let s2 = back.iter().find(|s| s.id == "s2").unwrap();
+        assert_eq!(
+            s2.spec.env.get("TOKEN").map(|s| s.as_str()),
+            Some("中文密钥 ±*/\"'")
+        );
+
+        // 同一份文件再导入一次：merge 的语义是跳过已有 id，既不重复也不覆盖
+        let again = import_from_file(&dst, path.to_str().unwrap(), false).unwrap();
+        assert_eq!(
+            (again.services_added, again.services_skipped, again.groups_added),
+            (0, 2, 0)
+        );
+
+        std::fs::remove_file(&path).ok();
+        drop(src);
+        drop(dst);
+        std::fs::remove_dir_all(src_dir).ok();
+        std::fs::remove_dir_all(dst_dir).ok();
+    }
+
+    /// 有一条 spec 读不出来就必须中止导出：否则空 spec 被当成真配置写进备份，
+    /// 用户拿它恢复时等于静默清空全部配置。
+    #[test]
+    fn export_aborts_when_any_service_config_is_unreadable() {
+        let (src, src_dir) = state();
+        {
+            let conn = src.db.lock().unwrap();
+            db::insert_service(&conn, "ok", "正常服务", None, 1, false, &spec_with_token("x")).unwrap();
+            conn.execute(
+                "INSERT INTO services (id, name, sort_order, enabled, spec_json, created_at, updated_at)
+                 VALUES ('bad','坏配置服务',2,0,'{ 这不是 JSON',1,1)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let path = std::env::temp_dir().join(format!("sp-export-{}.json", uuid::Uuid::new_v4()));
+        let err = export_to_file(&src, path.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("坏配置服务"), "报错要点出是哪个服务坏了：{err}");
+        assert!(!path.exists(), "中止导出不能留下半截备份文件");
+
+        drop(src);
+        std::fs::remove_dir_all(src_dir).ok();
+    }
+}

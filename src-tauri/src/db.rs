@@ -79,7 +79,43 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         }
     }
 
-    conn.pragma_update(None, "user_version", 2)?;
+    if version < 3 {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS tasks (
+                id          TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                grp         TEXT,
+                config_json TEXT NOT NULL,
+                created_at  INTEGER NOT NULL,
+                updated_at  INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS task_runs (
+                id          TEXT PRIMARY KEY,
+                task_id     TEXT NOT NULL,
+                task_name   TEXT NOT NULL,
+                variant     TEXT,
+                extra_args  TEXT NOT NULL DEFAULT '',
+                status      TEXT NOT NULL,
+                exit_code   INTEGER,
+                started_at  INTEGER NOT NULL,
+                finished_at INTEGER,
+                duration_ms INTEGER,
+                log_path    TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_runs_task ON task_runs(task_id, started_at);
+
+            CREATE TABLE IF NOT EXISTS bookmarks (
+                id   TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                path TEXT NOT NULL
+            );
+            "#,
+        )?;
+    }
+
+    conn.pragma_update(None, "user_version", 3)?;
     Ok(())
 }
 
@@ -310,4 +346,315 @@ pub fn recent_events(conn: &Connection, limit: i64) -> rusqlite::Result<Vec<Even
         ))
     })?;
     rows.collect()
+}
+
+// ============================ 任务 / 运行 / 书签 ============================
+
+fn pack_config(cfg: &crate::types::TaskConfig) -> String {
+    let json = serde_json::to_string(cfg).unwrap_or_else(|_| "{}".to_string());
+    crate::secrets::encrypt(&json)
+}
+
+fn unpack_config(stored: &str) -> (crate::types::TaskConfig, bool) {
+    let json = crate::secrets::decrypt(stored);
+    match serde_json::from_str::<crate::types::TaskConfig>(&json) {
+        Ok(c) => (c, true),
+        Err(_) => (crate::types::TaskConfig::default(), false),
+    }
+}
+
+pub fn list_tasks(conn: &Connection) -> rusqlite::Result<Vec<crate::types::TaskView>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, grp, config_json FROM tasks ORDER BY name ASC",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, Option<String>>(2)?,
+            r.get::<_, String>(3)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, name, grp, cfg_json) = row?;
+        let (config, config_ok) = unpack_config(&cfg_json);
+        out.push(crate::types::TaskView {
+            id,
+            name,
+            group: grp,
+            config,
+            config_ok,
+        });
+    }
+    Ok(out)
+}
+
+pub fn insert_task(
+    conn: &Connection,
+    id: &str,
+    name: &str,
+    group: Option<&str>,
+    config: &crate::types::TaskConfig,
+) -> rusqlite::Result<()> {
+    let ts = now_ts();
+    conn.execute(
+        "INSERT INTO tasks (id, name, grp, config_json, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6)",
+        params![id, name, group, pack_config(config), ts, ts],
+    )?;
+    Ok(())
+}
+
+pub fn update_task(
+    conn: &Connection,
+    id: &str,
+    name: &str,
+    group: Option<&str>,
+    config: &crate::types::TaskConfig,
+) -> rusqlite::Result<()> {
+    let ts = now_ts();
+    conn.execute(
+        "UPDATE tasks SET name=?2, grp=?3, config_json=?4, updated_at=?5 WHERE id=?1",
+        params![id, name, group, pack_config(config), ts],
+    )?;
+    Ok(())
+}
+
+pub fn delete_task(conn: &Connection, id: &str) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM tasks WHERE id=?1", params![id])?;
+    conn.execute("DELETE FROM task_runs WHERE task_id=?1", params![id])?;
+    Ok(())
+}
+
+/// 插入一条 queued 运行记录
+pub fn insert_task_run(
+    conn: &Connection,
+    run: &crate::types::TaskRun,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO task_runs (id, task_id, task_name, variant, extra_args, status, exit_code, started_at, finished_at, duration_ms, log_path)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        params![
+            run.id,
+            run.task_id,
+            run.task_name,
+            run.variant,
+            run.extra_args,
+            status_str(run.status),
+            run.exit_code,
+            run.started_at,
+            run.finished_at,
+            run.duration_ms,
+            run.log_path
+        ],
+    )?;
+    Ok(())
+}
+
+fn status_str(s: crate::types::TaskRunStatus) -> &'static str {
+    use crate::types::TaskRunStatus::*;
+    match s {
+        Queued => "queued",
+        Running => "running",
+        Success => "success",
+        Failed => "failed",
+        Cancelled => "cancelled",
+    }
+}
+
+fn status_from(s: &str) -> crate::types::TaskRunStatus {
+    use crate::types::TaskRunStatus::*;
+    match s {
+        "running" => Running,
+        "success" => Success,
+        "failed" => Failed,
+        "cancelled" => Cancelled,
+        _ => Queued,
+    }
+}
+
+pub fn set_task_run_running(conn: &Connection, id: &str, started_at: i64, log_path: &str) {
+    conn.execute(
+        "UPDATE task_runs SET status='running', started_at=?2, log_path=?3 WHERE id=?1",
+        params![id, started_at, log_path],
+    )
+    .ok();
+}
+
+pub fn finish_task_run(
+    conn: &Connection,
+    id: &str,
+    status: crate::types::TaskRunStatus,
+    exit_code: Option<i32>,
+    finished_at: i64,
+    duration_ms: i64,
+) {
+    conn.execute(
+        "UPDATE task_runs SET status=?2, exit_code=?3, finished_at=?4, duration_ms=?5 WHERE id=?1",
+        params![id, status_str(status), exit_code, finished_at, duration_ms],
+    )
+    .ok();
+}
+
+pub fn list_task_runs(
+    conn: &Connection,
+    limit: i64,
+) -> rusqlite::Result<Vec<crate::types::TaskRun>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, task_id, task_name, variant, extra_args, status, exit_code, started_at, finished_at, duration_ms, COALESCE(log_path,'')
+         FROM task_runs ORDER BY started_at DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![limit], |r| {
+        let status: String = r.get(5)?;
+        Ok(crate::types::TaskRun {
+            id: r.get(0)?,
+            task_id: r.get(1)?,
+            task_name: r.get(2)?,
+            variant: r.get(3)?,
+            extra_args: r.get(4)?,
+            status: status_from(&status),
+            exit_code: r.get(6)?,
+            started_at: r.get(7)?,
+            finished_at: r.get(8)?,
+            duration_ms: r.get(9)?,
+            log_path: r.get(10)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn list_bookmarks(conn: &Connection) -> rusqlite::Result<Vec<crate::types::Bookmark>> {
+    let mut stmt = conn.prepare("SELECT id, name, path FROM bookmarks ORDER BY name ASC")?;
+    let rows = stmt.query_map([], |r| {
+        Ok(crate::types::Bookmark {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            path: r.get(2)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn insert_bookmark(conn: &Connection, id: &str, name: &str, path: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO bookmarks (id, name, path) VALUES (?1,?2,?3)",
+        params![id, name, path],
+    )?;
+    Ok(())
+}
+
+pub fn delete_bookmark(conn: &Connection, id: &str) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM bookmarks WHERE id=?1", params![id])?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("sp-db-{}-{}", tag, uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// 手造一份「上一版」的库：`user_version=1`、groups 还带着 start_order 死列，
+    /// 服务一条走加密、一条留明文（对应还没加密时存下去的老记录）。
+    fn write_v1_db(dir: &std::path::Path) {
+        let conn = Connection::open(dir.join("panel.db")).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE groups (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                start_order INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE services (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, group_id TEXT,
+                sort_order INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 0,
+                spec_json TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE service_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, service_id TEXT NOT NULL,
+                ts INTEGER NOT NULL, from_state TEXT, to_state TEXT NOT NULL,
+                reason TEXT, exit_code INTEGER
+            );
+            PRAGMA user_version=1;
+            "#,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO groups (id, name, start_order) VALUES ('g1','旧分组',7)",
+            [],
+        )
+        .unwrap();
+        let mut env = HashMap::new();
+        env.insert("TOKEN".to_string(), "v1-secret".to_string());
+        let spec = ServiceSpec {
+            env,
+            ..ServiceSpec::default()
+        };
+        insert_service(&conn, "s1", "加密旧服务", Some("g1"), 1, true, &spec).unwrap();
+        // 老版本还没加密时写下的明文记录：当年也是完整 JSON，不是空对象
+        let legacy = ServiceSpec {
+            command: "node".to_string(),
+            args: vec!["server.js".to_string()],
+            ..ServiceSpec::default()
+        };
+        conn.execute(
+            "INSERT INTO services (id, name, group_id, sort_order, enabled, spec_json, created_at, updated_at)
+             VALUES ('s2','明文旧服务',NULL,2,0,?1,1,1)",
+            params![serde_json::to_string(&legacy).unwrap()],
+        )
+        .unwrap();
+    }
+
+    /// 用户机器上的老库必须能被新版打开：版本号推进、死列删掉、数据一行不少。
+    /// 这条挂了就是「升级即丢配置」，没有第二次机会。
+    #[test]
+    fn v1_db_upgrades_without_losing_rows() {
+        let dir = temp_dir("v1");
+        write_v1_db(&dir);
+
+        let conn = open(&dir).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 2, "迁移后 user_version 应推进到 2");
+
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(groups)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert!(
+            !cols.contains(&"start_order".to_string()),
+            "start_order 是只写不读的死列，迁移应删掉；实际列：{cols:?}"
+        );
+
+        let groups = list_groups(&conn).unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "旧分组", "删列不能把整行一起带走");
+
+        let services = list_services(&conn).unwrap();
+        assert_eq!(services.len(), 2);
+        let enc = services.iter().find(|s| s.id == "s1").unwrap();
+        assert!(enc.config_ok, "加密的老 spec 应能被新版解密");
+        assert_eq!(enc.spec.env.get("TOKEN").map(|s| s.as_str()), Some("v1-secret"));
+        let plain = services.iter().find(|s| s.id == "s2").unwrap();
+        assert!(plain.config_ok, "明文老记录也要能读，不能被判成配置损坏");
+        assert_eq!(plain.spec.command, "node");
+        assert_eq!(plain.spec.args, vec!["server.js".to_string()]);
+
+        // 迁移必须幂等：第二次打开不能因为列已经没了而报错
+        drop(conn);
+        let again = open(&dir).unwrap();
+        assert_eq!(list_groups(&again).unwrap().len(), 1);
+
+        drop(again);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

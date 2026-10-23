@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { devApi } from "./devPreview";
 import type {
+  Bookmark,
   Group,
   GroupResult,
   ImportOutcome,
@@ -9,9 +11,18 @@ import type {
   ServiceInput,
   ServiceView,
   StateChange,
+  TaskInput,
+  TaskRun,
+  TaskView,
 } from "../types";
 
-export const api = {
+// 浏览器预览开关：真壳里窗口带 __TAURI_INTERNALS__，打包构建又不是 DEV，两条都不成立。
+const browserPreview =
+  import.meta.env.DEV &&
+  typeof window !== "undefined" &&
+  !("__TAURI_INTERNALS__" in window);
+
+const realApi = {
   list: () => invoke<ServiceView[]>("list_services"),
   add: (input: ServiceInput) => invoke<string>("add_service", { input }),
   update: (input: ServiceInput) => invoke<void>("update_service", { input }),
@@ -42,21 +53,44 @@ export const api = {
     invoke<ImportOutcome>("import_config", { path, replace }),
   // —— 端口体检 ——
   portAudit: () => invoke<PortAudit[]>("port_audit"),
+  // —— 任务 ——
+  listTasks: () => invoke<TaskView[]>("list_tasks"),
+  addTask: (input: TaskInput) => invoke<string>("add_task", { input }),
+  updateTask: (input: TaskInput) => invoke<void>("update_task", { input }),
+  deleteTask: (id: string) => invoke<void>("delete_task", { id }),
+  runTask: (taskId: string, variantIndex: number | null, extraArgs: string) =>
+    invoke<string>("run_task", { taskId, variantIndex, extraArgs }),
+  cancelTaskRun: (runId: string) => invoke<void>("cancel_task_run", { runId }),
+  listTaskRuns: (limit: number) => invoke<TaskRun[]>("list_task_runs", { limit }),
+  openInExplorer: (path: string) => invoke<void>("open_in_explorer", { path }),
+  openInTerminal: (path: string) => invoke<void>("open_in_terminal", { path }),
+  // —— 书签 ——
+  listBookmarks: () => invoke<Bookmark[]>("list_bookmarks"),
+  addBookmark: (name: string, path: string) =>
+    invoke<string>("add_bookmark", { name, path }),
+  deleteBookmark: (id: string) => invoke<void>("delete_bookmark", { id }),
 };
 
+export const api = (browserPreview ? devApi : realApi) as typeof realApi;
+
+const noListen: Promise<UnlistenFn> = Promise.resolve(() => {});
+
 export function onLog(cb: (events: LogEvent[]) => void): Promise<UnlistenFn> {
+  if (browserPreview) return noListen;
   return listen<LogEvent[]>("log://batch", (ev) => cb(ev.payload));
 }
 
 export function onStateChange(
   cb: (e: StateChange) => void
 ): Promise<UnlistenFn> {
+  if (browserPreview) return noListen;
   return listen<StateChange>("state://change", (ev) => cb(ev.payload));
 }
 
 export function onGroupResult(
   cb: (e: GroupResult) => void
 ): Promise<UnlistenFn> {
+  if (browserPreview) return noListen;
   return listen<GroupResult>("group://result", (ev) => cb(ev.payload));
 }
 
@@ -72,5 +106,6 @@ export interface GroupProgress {
 export function onGroupProgress(
   cb: (e: GroupProgress) => void
 ): Promise<UnlistenFn> {
+  if (browserPreview) return noListen;
   return listen<GroupProgress>("group://progress", (ev) => cb(ev.payload));
 }

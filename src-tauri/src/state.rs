@@ -148,6 +148,12 @@ pub struct AppState {
     pub group_ops: Arc<Mutex<std::collections::HashSet<String>>>,
     /// 上一次重建托盘菜单时的签名；签名没变就不必重建整个菜单
     pub tray_sig: Arc<Mutex<String>>,
+    /// 任务串行队列的发送端（setup 里注入）
+    pub task_tx: Arc<Mutex<Option<Sender<crate::types::TaskRunRequest>>>>,
+    /// 当前运行任务的取消标志
+    pub task_cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// 当前正在运行的任务 run id
+    pub task_current: Arc<Mutex<Option<String>>>,
 }
 
 impl AppState {
@@ -161,6 +167,9 @@ impl AppState {
             ops: Arc::new(Mutex::new(std::collections::HashSet::new())),
             group_ops: Arc::new(Mutex::new(std::collections::HashSet::new())),
             tray_sig: Arc::new(Mutex::new(String::new())),
+            task_tx: Arc::new(Mutex::new(None)),
+            task_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            task_current: Arc::new(Mutex::new(None)),
         }
     }
 

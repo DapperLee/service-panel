@@ -9,6 +9,8 @@ interface Props {
   /** 由 App 汇聚的所有日志流（按 serviceId 过滤） */
   logs: Record<string, LogLine[]>;
   onClear: (id: string) => void;
+  /** 头部额外操作（如任务运行控制台的"取消"按钮） */
+  extra?: React.ReactNode;
 }
 
 function fmt(ts: number) {
@@ -21,6 +23,7 @@ export default function LogConsole({
   serviceName,
   logs,
   onClear,
+  extra,
 }: Props) {
   const [follow, setFollow] = useState(true);
   const [q, setQ] = useState("");
@@ -78,6 +81,7 @@ export default function LogConsole({
     <div className="logs">
       <div className="log-head">
         <strong>{serviceName}</strong>
+        {extra}
         <span className="spacer" style={{ flex: 1 }} />
         <label style={{ fontSize: 12, color: "var(--text-dim)" }}>
           <input

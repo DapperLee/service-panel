@@ -14,6 +14,7 @@ mod netdiag;
 mod secrets;
 mod state;
 mod supervisor;
+mod task;
 mod tray;
 mod types;
 #[cfg(windows)]
@@ -235,6 +236,9 @@ pub fn run() {
             // 监督线程（含启动接管与自启）
             supervisor::spawn_supervisor(state.clone());
 
+            // 任务串行队列 worker
+            task::spawn_worker(state.clone());
+
             // 开机自启启动时：不弹主窗口，直接躲在托盘后面
             if launched_by_autostart() {
                 if let Some(w) = app_handle.get_webview_window("main") {
@@ -270,6 +274,18 @@ pub fn run() {
             commands::export_config,
             commands::import_config,
             commands::port_audit,
+            commands::list_tasks,
+            commands::add_task,
+            commands::update_task,
+            commands::delete_task,
+            commands::run_task,
+            commands::cancel_task_run,
+            commands::list_task_runs,
+            commands::open_in_explorer,
+            commands::open_in_terminal,
+            commands::list_bookmarks,
+            commands::add_bookmark,
+            commands::delete_bookmark,
         ])
         .build(tauri::generate_context!())
         .expect("运行 服务面板 失败")
