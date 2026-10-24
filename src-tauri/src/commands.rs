@@ -375,13 +375,31 @@ pub fn run_task(
 /// 取消当前运行的任务（打进程树）。仅对正在运行的那个有效。
 #[tauri::command]
 pub fn cancel_task_run(state: tauri::State<'_, Arc<AppState>>, run_id: String) -> Result<(), String> {
-    let current = state.task_current.lock().unwrap().clone();
-    if current.as_deref() == Some(run_id.as_str()) {
-        state.task_cancel.store(true, std::sync::atomic::Ordering::SeqCst);
-        Ok(())
-    } else {
-        Err("该运行不在执行中，无法取消".to_string())
+    let flag = state.task_cancel_flags.lock().unwrap().get(run_id.as_str()).cloned();
+    match flag {
+        Some(f) => {
+            f.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        None => Err("该运行不在执行中，无法取消".to_string()),
     }
+}
+
+/// 任务最大并发数（1=串行）
+#[tauri::command]
+pub fn get_task_max_parallel(state: tauri::State<'_, Arc<AppState>>) -> usize {
+    state.task_max_parallel.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[tauri::command]
+pub fn set_task_max_parallel(
+    state: tauri::State<'_, Arc<AppState>>,
+    n: usize,
+) -> Result<(), String> {
+    state
+        .task_max_parallel
+        .store(n.clamp(1, 16), std::sync::atomic::Ordering::SeqCst);
+    Ok(())
 }
 
 #[tauri::command]

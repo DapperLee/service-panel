@@ -34,37 +34,69 @@ fn shell_flag() -> &'static str {
     "-c"
 }
 
-/// 启动串行队列 worker 线程，并把发送端注入 AppState。
+/// 启动任务队列 worker：可配并发数（task_max_parallel，1=串行）。
+/// 调度线程从 channel 取请求，占一个并发槽后 spawn 一个运行线程；槽满则等待。
 pub fn spawn_worker(state: Arc<AppState>) {
     let (tx, rx) = std::sync::mpsc::channel::<TaskRunRequest>();
     *state.task_tx.lock().unwrap() = Some(tx);
     std::thread::spawn(move || {
+        // 计数信号量：活跃运行数 + 条件变量
+        let slots = Arc::new((std::sync::Mutex::new(0usize), std::sync::Condvar::new()));
         for req in rx {
             let run_id = req.run_id.clone();
-            let st = state.clone();
-            // 单个任务 panic 不能带走 worker，否则后续排队任务全丢
-            let res =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(&st, req)));
-            if res.is_err() {
-                let conn = st.db.lock().unwrap();
-                db::finish_task_run(
-                    &conn,
-                    &run_id,
-                    TaskRunStatus::Failed,
-                    None,
-                    now_ms() / 1000,
-                    0,
-                );
+            // 等待空闲槽（每次重新读 max_parallel，支持运行时调大/调小）
+            {
+                let (m, cv) = &*slots;
+                let mut g = m.lock().unwrap();
+                loop {
+                    let max = state.task_max_parallel.load(Ordering::SeqCst).max(1);
+                    if *g < max {
+                        *g += 1;
+                        break;
+                    }
+                    g = cv.wait(g).unwrap();
+                }
             }
-            *st.task_current.lock().unwrap() = None;
-            st.task_cancel.store(false, Ordering::SeqCst);
+
+            let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            state
+                .task_cancel_flags
+                .lock()
+                .unwrap()
+                .insert(run_id.clone(), cancel.clone());
+            state.task_active.lock().unwrap().insert(run_id.clone());
+
+            let st = state.clone();
+            let slots2 = slots.clone();
+            let rid = run_id.clone();
+            std::thread::spawn(move || {
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    execute(&st, req, cancel)
+                }));
+                if res.is_err() {
+                    let conn = st.db.lock().unwrap();
+                    db::finish_task_run(
+                        &conn,
+                        &rid,
+                        TaskRunStatus::Failed,
+                        None,
+                        now_ms() / 1000,
+                        0,
+                    );
+                }
+                st.task_active.lock().unwrap().remove(&rid);
+                st.task_cancel_flags.lock().unwrap().remove(&rid);
+                let (m, cv) = &*slots2;
+                let mut g = m.lock().unwrap();
+                *g = g.saturating_sub(1);
+                cv.notify_all();
+            });
         }
     });
 }
 
-fn execute(state: &Arc<AppState>, req: TaskRunRequest) {
-    state.task_cancel.store(false, Ordering::SeqCst);
-    *state.task_current.lock().unwrap() = Some(req.run_id.clone());
+fn execute(state: &Arc<AppState>, req: TaskRunRequest, cancel: Arc<std::sync::atomic::AtomicBool>) {
+    let _ = &cancel; // 取消标志在等待循环里读取
 
     let emitter = match state.current_emitter() {
         Some(e) => e,
@@ -286,7 +318,7 @@ fn execute(state: &Arc<AppState>, req: TaskRunRequest) {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) => {
-                if state.task_cancel.load(Ordering::SeqCst) {
+                if cancel.load(Ordering::SeqCst) {
                     cancelled = true;
                     #[cfg(unix)]
                     crate::drivers::command::kill_group(pid, false);

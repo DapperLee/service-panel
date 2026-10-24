@@ -155,12 +155,15 @@ pub struct AppState {
     pub group_ops: Arc<Mutex<std::collections::HashSet<String>>>,
     /// 上一次重建托盘菜单时的签名；签名没变就不必重建整个菜单
     pub tray_sig: Arc<Mutex<String>>,
-    /// 任务串行队列的发送端（setup 里注入）
+    /// 任务队列的发送端（setup 里注入）
     pub task_tx: Arc<Mutex<Option<Sender<crate::types::TaskRunRequest>>>>,
-    /// 当前运行任务的取消标志
-    pub task_cancel: Arc<std::sync::atomic::AtomicBool>,
-    /// 当前正在运行的任务 run id
-    pub task_current: Arc<Mutex<Option<String>>>,
+    /// 每个正在运行任务的取消标志（run_id -> flag），支持并行下按运行精确取消
+    pub task_cancel_flags:
+        Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
+    /// 当前正在运行的任务 run id 集合（供 UI 显示"运行中 N"）
+    pub task_active: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// 最大并发运行数（1 = 串行；可调大做并行）。会话级设置，重启回默认。
+    pub task_max_parallel: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl AppState {
@@ -175,8 +178,9 @@ impl AppState {
             group_ops: Arc::new(Mutex::new(std::collections::HashSet::new())),
             tray_sig: Arc::new(Mutex::new(String::new())),
             task_tx: Arc::new(Mutex::new(None)),
-            task_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            task_current: Arc::new(Mutex::new(None)),
+            task_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
+            task_active: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            task_max_parallel: Arc::new(std::sync::atomic::AtomicUsize::new(1)),
         }
     }
 

@@ -47,17 +47,22 @@ export default function TasksView({ services, logs, onClearLog }: Props) {
   const [editOpen, setEditOpen] = useState(false);
   const [editing, setEditing] = useState<TaskView | null>(null);
   const [runFor, setRunFor] = useState<TaskView | null>(null);
+  const [selGroup, setSelGroup] = useState<string | null>(null);
+  const [maxParallel, setMaxParallel] = useState(1);
+  const [runningGroup, setRunningGroup] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [t, r, b] = await Promise.all([
+      const [t, r, b, mp] = await Promise.all([
         api.listTasks(),
         api.listTaskRuns(50),
         api.listBookmarks(),
+        api.getTaskMaxParallel(),
       ]);
       setTasks(t);
       setRuns(r);
       setBookmarks(b);
+      setMaxParallel(mp);
     } catch (e) {
       console.error(e);
     }
@@ -87,22 +92,98 @@ export default function TasksView({ services, logs, onClearLog }: Props) {
 
   const selectedRunObj = runs.find((r) => r.id === selectedRun) || null;
 
+  // 从任务的 group 字段派生分组列表（去重、非空）
+  const groups = Array.from(
+    new Set(tasks.map((t) => t.group).filter((g): g is string => !!g))
+  ).sort();
+  const filtered = selGroup === null ? tasks : tasks.filter((t) => t.group === selGroup);
+
+  const runGroup = async () => {
+    const list = filtered.filter((t) => t.configOk);
+    if (list.length === 0) return;
+    if (!confirm(`运行「${selGroup ?? "全部"}」下的 ${list.length} 个任务？`)) return;
+    setRunningGroup(true);
+    try {
+      for (const t of list) {
+        // 用默认参数（不选变体）；并发由后端队列按并发数调度
+        await api.runTask(t.id, null, "");
+      }
+      load();
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setRunningGroup(false);
+    }
+  };
+
+  const changeParallel = async (n: number) => {
+    const v = Math.max(1, Math.min(16, n || 1));
+    setMaxParallel(v);
+    try {
+      await api.setTaskMaxParallel(v);
+    } catch (e) {
+      alert(String(e));
+    }
+  };
+
   return (
     <div className="body">
       <div className="grid-wrap">
         <div className="section-head">
           <strong>任务</strong>
           <span className="spacer" style={{ flex: 1 }} />
+          <label className="conc" title="同时运行的任务数（1=串行）。构建吃资源，按需调大。">
+            并发数
+            <input
+              type="number"
+              min={1}
+              max={16}
+              value={maxParallel}
+              onChange={(e) => changeParallel(Number(e.target.value))}
+            />
+          </label>
           <button className="primary" onClick={() => { setEditing(null); setEditOpen(true); }}>
             + 新建任务
           </button>
         </div>
 
-        {tasks.length === 0 ? (
-          <div className="empty">还没有任务。新建一个，把常用的构建/命令存起来，一键就跑。</div>
+        <div className="groupbar">
+          <button
+            className={`tab${selGroup === null ? " active" : ""}`}
+            onClick={() => setSelGroup(null)}
+          >
+            全部
+          </button>
+          {groups.map((g) => {
+            const cnt = tasks.filter((t) => t.group === g).length;
+            return (
+              <button
+                key={g}
+                className={`tab${selGroup === g ? " active" : ""}`}
+                onClick={() => setSelGroup(g)}
+              >
+                {g}
+                <span className="tab-count">{cnt}</span>
+              </button>
+            );
+          })}
+          <div className="spacer" />
+          {selGroup !== null && (
+            <button disabled={runningGroup} onClick={runGroup}>
+              ▶ 运行本组
+            </button>
+          )}
+        </div>
+
+        {filtered.length === 0 ? (
+          <div className="empty">
+            {selGroup === null
+              ? "还没有任务。新建一个，把常用的构建/命令存起来，一键就跑。"
+              : "该分组下还没有任务。编辑任务填「分组」即可归入本组。"}
+          </div>
         ) : (
           <div className="grid">
-            {tasks.map((t) => (
+            {filtered.map((t) => (
               <div className="card" key={t.id}>
                 <div className="head">
                   <span className="name">{t.name}</span>

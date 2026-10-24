@@ -229,6 +229,8 @@ export const devApi = {
   },
   cancelTaskRun: async () => {},
   listTaskRuns: async (limit: number) => runs.slice(0, limit),
+  getTaskMaxParallel: async () => 1,
+  setTaskMaxParallel: async () => {},
   openInExplorer: async () => {},
   openInTerminal: async () => {},
   listBookmarks: async () => (ensure(), bookmarks),

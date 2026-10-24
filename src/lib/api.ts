@@ -62,6 +62,8 @@ const realApi = {
     invoke<string>("run_task", { taskId, variantIndex, extraArgs }),
   cancelTaskRun: (runId: string) => invoke<void>("cancel_task_run", { runId }),
   listTaskRuns: (limit: number) => invoke<TaskRun[]>("list_task_runs", { limit }),
+  getTaskMaxParallel: () => invoke<number>("get_task_max_parallel"),
+  setTaskMaxParallel: (n: number) => invoke<void>("set_task_max_parallel", { n }),
   openInExplorer: (path: string) => invoke<void>("open_in_explorer", { path }),
   openInTerminal: (path: string) => invoke<void>("open_in_terminal", { path }),
   // —— 书签 ——

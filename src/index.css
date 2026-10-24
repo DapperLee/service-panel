@@ -480,6 +480,18 @@ textarea:focus {
 .bookmark-row .mono {
   color: var(--text-dim);
 }
+.conc {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.conc input {
+  width: 56px;
+  padding: 4px 6px;
+  text-align: center;
+}
 
 /* 提权横幅 */
 .admin-banner {

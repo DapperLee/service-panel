@@ -281,6 +281,8 @@ pub fn run() {
             commands::run_task,
             commands::cancel_task_run,
             commands::list_task_runs,
+            commands::get_task_max_parallel,
+            commands::set_task_max_parallel,
             commands::open_in_explorer,
             commands::open_in_terminal,
             commands::list_bookmarks,
