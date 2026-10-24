@@ -6,8 +6,9 @@ export default defineConfig({
   plugins: [react()],
   clearScreen: false,
   server: {
-    // 避开 vite 默认的 5173：你机器上常常同时跑着多个项目的 dev server
-    port: 5273,
+    // 默认 5273；测试实例可用 TAURI_DEV_PORT 指定别的端口，避免和正式实例抢端口。
+    // 注意：改端口要同时让 tauri 的 devUrl 指到同一端口（见 package.json 的 tauri:dev:test）。
+    port: Number(process.env.TAURI_DEV_PORT) || 5273,
     strictPort: true,
   },
   envPrefix: ["VITE_", "TAURI_"],

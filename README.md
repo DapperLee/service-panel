@@ -98,6 +98,18 @@ npm run tauri dev
 npm run tauri build
 ```
 
+**同时跑测试实例（不和正式实例抢端口/数据）**：正式实例默认占 vite 端口 5273。
+想另开一个测试实例，用：
+
+```bash
+npm run tauri:dev:test
+```
+
+它会用端口 **5274**、并把 identifier 换成 `com.local.servicepanel.test`——于是测试实例有
+**独立的 `%APPDATA%` 数据目录、独立的单实例锁**，既不和正式实例抢端口，也不会共用同一个
+SQLite 库互相污染。端口/identifier 在 `src-tauri/tauri.test.conf.json` 里改。
+（正式实例仍用 `npm run tauri dev`，端口可用环境变量 `TAURI_DEV_PORT` 覆盖。）
+
 要管 Windows 系统服务需管理员权限：开发时用**管理员终端**跑 `npm run tauri dev`。
 
 **只想看界面 / 调样式**（不编译 Rust、不起壳）：`npm run dev` 后浏览器打开 `http://localhost:5273`。

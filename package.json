@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:dev:test": "cross-env TAURI_DEV_PORT=5274 tauri dev --config src-tauri/tauri.test.conf.json"
   },
   "dependencies": {
     "@tauri-apps/api": "~2.11.0",
@@ -20,6 +21,7 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "cross-env": "^7.0.3",
     "typescript": "^5.6.3",
     "vite": "^5.4.11"
   },
