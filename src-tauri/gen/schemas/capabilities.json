@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"服务面板主窗口的默认权限","local":true,"windows":["main"],"permissions":["core:default","core:event:default","core:window:allow-set-title","dialog:default"]}}
+{"default":{"identifier":"default","description":"服务面板主窗口的默认权限","local":true,"windows":["main"],"permissions":["core:default","core:event:default","core:window:allow-set-title","dialog:default","notification:default"]}}

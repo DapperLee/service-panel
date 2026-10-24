@@ -300,6 +300,9 @@ pub struct TaskConfig {
     /// 运行前必须处于 Running 的服务 id（依赖服务）
     #[serde(default)]
     pub requires: Vec<String>,
+    /// 运行超时秒数（0 = 不限制，构建可能很久）；超时按取消处理
+    #[serde(default)]
+    pub timeout_secs: u64,
 }
 
 impl Default for TaskConfig {
@@ -313,6 +316,7 @@ impl Default for TaskConfig {
             encoding: default_encoding(),
             variants: Vec::new(),
             requires: Vec::new(),
+            timeout_secs: 0,
         }
     }
 }
@@ -327,6 +331,9 @@ pub struct TaskView {
     pub config: TaskConfig,
     #[serde(default = "default_true")]
     pub config_ok: bool,
+    /// 上次运行用的变体下标（运行本组时沿用）
+    #[serde(default)]
+    pub last_variant_index: Option<usize>,
 }
 
 /// 任务运行状态
@@ -348,6 +355,8 @@ pub struct TaskRun {
     pub task_id: String,
     pub task_name: String,
     pub variant: Option<String>,
+    #[serde(default)]
+    pub variant_index: Option<usize>,
     pub extra_args: String,
     pub status: TaskRunStatus,
     pub exit_code: Option<i32>,
@@ -380,6 +389,7 @@ pub struct TaskInput {
 #[derive(Debug, Clone)]
 pub struct TaskRunRequest {
     pub run_id: String,
+    pub name: String,
     pub config: TaskConfig,
     pub variant_index: Option<usize>,
     pub extra_args: Vec<String>,

@@ -314,6 +314,9 @@ export default function App() {
           services={services}
           logs={logs}
           onClearLog={(id) => setLogs((p) => ({ ...p, [id]: [] }))}
+          onInjectLog={(id, lines) =>
+            setLogs((p) => (p[id] && p[id].length > 0 ? p : { ...p, [id]: lines }))
+          }
         />
       )}
 

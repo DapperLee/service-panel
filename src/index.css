@@ -554,3 +554,14 @@ textarea:focus {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.run-row {
+  grid-template-columns: 60px 1fr 70px 1fr auto;
+}
+.run-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+.run-actions button {
+  padding: 3px 8px;
+  font-size: 12px;
+}

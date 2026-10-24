@@ -121,37 +121,54 @@ impl LogSink {
 }
 
 /// 删除 keep_days 之前修改过的日志文件（含 .log 与 .log.N），控制磁盘占用。
+/// 递归遍历：服务日志在 `logs/<id>/`，任务日志在 `logs/_tasks/<run_id>/`，都要覆盖。
+/// 删空后的运行目录一并移除，避免 `_tasks` 下堆积空壳。
 pub fn cleanup_old_logs(log_root: &Path, keep_days: i64) {
     let cutoff = std::time::SystemTime::now()
         - std::time::Duration::from_secs(keep_days.max(1) as u64 * 86400);
-    let rd = match std::fs::read_dir(log_root) {
+    cleanup_dir(log_root, cutoff, false);
+}
+
+fn cleanup_dir(dir: &Path, cutoff: std::time::SystemTime, is_root: bool) {
+    let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(_) => return,
     };
-    for svc in rd.flatten() {
-        let files = match std::fs::read_dir(svc.path()) {
-            Ok(f) => f,
+    for entry in rd.flatten() {
+        let p = entry.path();
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
             Err(_) => continue,
         };
-        for entry in files.flatten() {
-            let p = entry.path();
-            let is_log = p
-                .file_name()
-                .and_then(|s| s.to_str())
-                .map(|n| n.contains(".log"))
-                .unwrap_or(false);
-            if !is_log {
-                continue;
+        if ft.is_dir() {
+            // 递归进子目录（服务 id / _tasks / _tasks/<run_id>）
+            cleanup_dir(&p, cutoff, false);
+            // 子目录空了且非根，删掉（刚建还没写的当前目录也可能会被判空，
+            // 但保留根目录，且只删完全空的目录，风险可控）
+            if let Ok(mut it) = std::fs::read_dir(&p) {
+                if it.next().is_none() {
+                    let _ = std::fs::remove_dir(&p);
+                }
             }
-            if let Ok(meta) = entry.metadata() {
-                if let Ok(mtime) = meta.modified() {
-                    if mtime < cutoff {
-                        let _ = std::fs::remove_file(&p);
-                    }
+            continue;
+        }
+        let is_log = p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|n| n.contains(".log"))
+            .unwrap_or(false);
+        if !is_log {
+            continue;
+        }
+        if let Ok(meta) = entry.metadata() {
+            if let Ok(mtime) = meta.modified() {
+                if mtime < cutoff {
+                    let _ = std::fs::remove_file(&p);
                 }
             }
         }
     }
+    let _ = is_root;
 }
 
 fn now_millis() -> i64 {

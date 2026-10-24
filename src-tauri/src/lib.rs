@@ -120,6 +120,7 @@ pub fn run() {
         ))
         // 原生文件对话框（导出/导入配置用）
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         // 关闭按钮 -> 隐藏到托盘，而不是退出
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -221,12 +222,34 @@ pub fn run() {
                 manager::ensure_runtime(&state, &v.id, v.spec, v.config_ok);
             }
 
-            // 启动清理：过期事件 + 超保留天数的日志目录
+            // 启动清理：过期事件 + 过期运行记录 + 超保留天数的日志目录
             {
                 let conn = state.db.lock().unwrap();
                 db::prune_events(&conn, 7, 5000);
+                db::prune_task_runs(&conn, 30, 500);
+                // 恢复上次设置的并发数
+                if let Some(v) = db::get_setting(&conn, "task_max_parallel") {
+                    if let Ok(n) = v.parse::<usize>() {
+                        state.task_max_parallel.store(n.clamp(1, 16), std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
             }
             logs::cleanup_old_logs(&state.log_root, 7);
+
+            // 注入系统通知回调（任务失败时调用）
+            {
+                let handle = app_handle.clone();
+                use tauri_plugin_notification::NotificationExt;
+                let notify: Arc<dyn Fn(String, String) + Send + Sync> = Arc::new(move |title, body| {
+                    let _ = handle
+                        .notification()
+                        .builder()
+                        .title(title)
+                        .body(body)
+                        .show();
+                });
+                *state.notify.lock().unwrap() = Some(notify);
+            }
 
             // 系统托盘常驻
             if let Err(e) = tray::install(&app_handle, state.clone()) {
@@ -236,7 +259,7 @@ pub fn run() {
             // 监督线程（含启动接管与自启）
             supervisor::spawn_supervisor(state.clone());
 
-            // 任务串行队列 worker
+            // 任务队列 worker（可配并发数）
             task::spawn_worker(state.clone());
 
             // 开机自启启动时：不弹主窗口，直接躲在托盘后面
@@ -283,6 +306,7 @@ pub fn run() {
             commands::list_task_runs,
             commands::get_task_max_parallel,
             commands::set_task_max_parallel,
+            commands::read_task_log,
             commands::open_in_explorer,
             commands::open_in_terminal,
             commands::list_bookmarks,

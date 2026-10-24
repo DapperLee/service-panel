@@ -136,6 +136,7 @@ export interface TaskConfig {
   encoding: string;
   variants: TaskVariant[];
   requires: string[];
+  timeoutSecs: number;
 }
 
 export interface TaskView {
@@ -144,6 +145,7 @@ export interface TaskView {
   group: string | null;
   config: TaskConfig;
   configOk: boolean;
+  lastVariantIndex: number | null;
 }
 
 export type TaskRunStatus =
@@ -158,6 +160,7 @@ export interface TaskRun {
   taskId: string;
   taskName: string;
   variant: string | null;
+  variantIndex: number | null;
   extraArgs: string;
   status: TaskRunStatus;
   exitCode: number | null;
@@ -190,6 +193,7 @@ export function defaultTaskConfig(): TaskConfig {
     encoding: "auto",
     variants: [],
     requires: [],
+    timeoutSecs: 0,
   };
 }
 

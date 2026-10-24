@@ -102,6 +102,15 @@ fn execute(state: &Arc<AppState>, req: TaskRunRequest, cancel: Arc<std::sync::at
         Some(e) => e,
         None => return,
     };
+
+    // 排队期间被取消：DB 状态已是 cancelled，直接跳过不执行
+    {
+        let conn = state.db.lock().unwrap();
+        if db::get_run_status(&conn, &req.run_id) == Some(TaskRunStatus::Cancelled) {
+            return;
+        }
+    }
+
     let cfg = req.config.clone();
     let run_dir = state.log_root.join("_tasks").join(&req.run_id);
     let sink = match LogSink::open(&run_dir) {
@@ -311,15 +320,24 @@ fn execute(state: &Arc<AppState>, req: TaskRunRequest, cancel: Arc<std::sync::at
         );
     }
 
-    // 等待退出或取消（构建可能很久，不设超时）
+    // 等待退出或取消（构建可能很久；cfg.timeout_secs=0 表示不限时）
     let start = Instant::now();
+    let timeout = if cfg.timeout_secs > 0 {
+        Some(Duration::from_secs(cfg.timeout_secs))
+    } else {
+        None
+    };
     let mut cancelled = false;
+    let mut timed_out = false;
     let exit = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) => {
-                if cancel.load(Ordering::SeqCst) {
-                    cancelled = true;
+                let hit_cancel = cancel.load(Ordering::SeqCst);
+                let hit_timeout = timeout.map(|t| start.elapsed() > t).unwrap_or(false);
+                if hit_cancel || hit_timeout {
+                    cancelled = hit_cancel && !hit_timeout;
+                    timed_out = hit_timeout;
                     #[cfg(unix)]
                     crate::drivers::command::kill_group(pid, false);
                     let _ = child.kill();
@@ -345,6 +363,8 @@ fn execute(state: &Arc<AppState>, req: TaskRunRequest, cancel: Arc<std::sync::at
 
     let (status, exit_code) = if cancelled {
         (TaskRunStatus::Cancelled, None)
+    } else if timed_out {
+        (TaskRunStatus::Failed, None)
     } else {
         match exit {
             Some(s) => {
@@ -362,12 +382,25 @@ fn execute(state: &Arc<AppState>, req: TaskRunRequest, cancel: Arc<std::sync::at
         }
     };
     let dur = start.elapsed().as_millis() as i64;
-    logs::system_message(
-        &format!("[task] 结束：{:?} exit={:?}", status, exit_code),
-        &req.run_id,
-        &emitter,
-        &sink,
-    );
+    let end_note = if timed_out {
+        format!("[task] 结束：超时({}s)", cfg.timeout_secs)
+    } else {
+        format!("[task] 结束：{:?} exit={:?}", status, exit_code)
+    };
+    logs::system_message(&end_note, &req.run_id, &emitter, &sink);
     let conn = state.db.lock().unwrap();
     db::finish_task_run(&conn, &req.run_id, status, exit_code, now_ms() / 1000, dur);
+
+    // 失败/超时给系统通知，长构建不用盯着屏幕
+    if matches!(status, TaskRunStatus::Failed) {
+        let notify = state.notify.lock().unwrap().clone();
+        if let Some(notify) = notify {
+            let body = if timed_out {
+                format!("{} 超时（{}s）", req.name, cfg.timeout_secs)
+            } else {
+                format!("{} 失败（exit {:?}）", req.name, exit_code)
+            };
+            notify("任务失败".to_string(), body);
+        }
+    }
 }

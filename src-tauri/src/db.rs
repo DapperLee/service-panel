@@ -115,8 +115,54 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
-    conn.pragma_update(None, "user_version", 3)?;
+    if version < 4 {
+        // 通用键值设置（存并发数等）
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )?;
+        // 运行记录记住用的哪个变体（重跑用）
+        conn.execute_batch("ALTER TABLE task_runs ADD COLUMN variant_index INTEGER;")?;
+        // 任务记住上次选的变体（运行本组时按各自默认变体跑）
+        conn.execute_batch("ALTER TABLE tasks ADD COLUMN last_variant_index INTEGER;")?;
+    }
+
+    conn.pragma_update(None, "user_version", 4)?;
     Ok(())
+}
+
+/// 读设置项
+pub fn get_setting(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| {
+        r.get::<_, String>(0)
+    })
+    .ok()
+}
+
+/// 写设置项（upsert）
+pub fn set_setting(conn: &Connection, key: &str, value: &str) {
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1,?2)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![key, value],
+    )
+    .ok();
+}
+
+/// 清理过期运行记录：按天 + 总量上限。
+pub fn prune_task_runs(conn: &Connection, keep_days: i64, max_rows: i64) {
+    let cutoff = now_ts() - keep_days * 86400;
+    conn.execute(
+        "DELETE FROM task_runs WHERE started_at < ?1",
+        params![cutoff],
+    )
+    .ok();
+    conn.execute(
+        "DELETE FROM task_runs WHERE id NOT IN (
+            SELECT id FROM task_runs ORDER BY started_at DESC LIMIT ?1
+        )",
+        params![max_rows],
+    )
+    .ok();
 }
 
 /// 清理过期事件：删除 keep_days 之前的记录，并限制总量上限。
@@ -366,7 +412,7 @@ fn unpack_config(stored: &str) -> (crate::types::TaskConfig, bool) {
 
 pub fn list_tasks(conn: &Connection) -> rusqlite::Result<Vec<crate::types::TaskView>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, grp, config_json FROM tasks ORDER BY name ASC",
+        "SELECT id, name, grp, config_json, last_variant_index FROM tasks ORDER BY name ASC",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok((
@@ -374,11 +420,12 @@ pub fn list_tasks(conn: &Connection) -> rusqlite::Result<Vec<crate::types::TaskV
             r.get::<_, String>(1)?,
             r.get::<_, Option<String>>(2)?,
             r.get::<_, String>(3)?,
+            r.get::<_, Option<i64>>(4)?,
         ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, name, grp, cfg_json) = row?;
+        let (id, name, grp, cfg_json, last_vi) = row?;
         let (config, config_ok) = unpack_config(&cfg_json);
         out.push(crate::types::TaskView {
             id,
@@ -386,6 +433,7 @@ pub fn list_tasks(conn: &Connection) -> rusqlite::Result<Vec<crate::types::TaskV
             group: grp,
             config,
             config_ok,
+            last_variant_index: last_vi.map(|v| v as usize),
         });
     }
     Ok(out)
@@ -433,13 +481,14 @@ pub fn insert_task_run(
     run: &crate::types::TaskRun,
 ) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO task_runs (id, task_id, task_name, variant, extra_args, status, exit_code, started_at, finished_at, duration_ms, log_path)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        "INSERT INTO task_runs (id, task_id, task_name, variant, variant_index, extra_args, status, exit_code, started_at, finished_at, duration_ms, log_path)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
         params![
             run.id,
             run.task_id,
             run.task_name,
             run.variant,
+            run.variant_index.map(|v| v as i64),
             run.extra_args,
             status_str(run.status),
             run.exit_code,
@@ -450,6 +499,24 @@ pub fn insert_task_run(
         ],
     )?;
     Ok(())
+}
+
+/// 读某次运行当前状态（调度器 pop 后据此决定是否跳过被取消的排队项）
+pub fn get_run_status(conn: &Connection, id: &str) -> Option<crate::types::TaskRunStatus> {
+    conn.query_row("SELECT status FROM task_runs WHERE id=?1", [id], |r| {
+        r.get::<_, String>(0)
+    })
+    .ok()
+    .map(|s| status_from(&s))
+}
+
+/// 记住某任务上次运行的变体（运行本组时按各自默认变体跑）
+pub fn set_task_last_variant(conn: &Connection, task_id: &str, variant_index: Option<usize>) {
+    conn.execute(
+        "UPDATE tasks SET last_variant_index=?2 WHERE id=?1",
+        params![task_id, variant_index.map(|v| v as i64)],
+    )
+    .ok();
 }
 
 fn status_str(s: crate::types::TaskRunStatus) -> &'static str {
@@ -502,23 +569,25 @@ pub fn list_task_runs(
     limit: i64,
 ) -> rusqlite::Result<Vec<crate::types::TaskRun>> {
     let mut stmt = conn.prepare(
-        "SELECT id, task_id, task_name, variant, extra_args, status, exit_code, started_at, finished_at, duration_ms, COALESCE(log_path,'')
+        "SELECT id, task_id, task_name, variant, variant_index, extra_args, status, exit_code, started_at, finished_at, duration_ms, COALESCE(log_path,'')
          FROM task_runs ORDER BY started_at DESC LIMIT ?1",
     )?;
     let rows = stmt.query_map(params![limit], |r| {
-        let status: String = r.get(5)?;
+        let status: String = r.get(6)?;
+        let vi: Option<i64> = r.get(4)?;
         Ok(crate::types::TaskRun {
             id: r.get(0)?,
             task_id: r.get(1)?,
             task_name: r.get(2)?,
             variant: r.get(3)?,
-            extra_args: r.get(4)?,
+            variant_index: vi.map(|v| v as usize),
+            extra_args: r.get(5)?,
             status: status_from(&status),
-            exit_code: r.get(6)?,
-            started_at: r.get(7)?,
-            finished_at: r.get(8)?,
-            duration_ms: r.get(9)?,
-            log_path: r.get(10)?,
+            exit_code: r.get(7)?,
+            started_at: r.get(8)?,
+            finished_at: r.get(9)?,
+            duration_ms: r.get(10)?,
+            log_path: r.get(11)?,
         })
     })?;
     rows.collect()

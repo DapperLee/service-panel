@@ -75,6 +75,7 @@ function ensure() {
       name: "Android 打包",
       group: null,
       configOk: true,
+      lastVariantIndex: null,
       config: {
         command: "npx", args: ["tauri", "android", "build"], cwd: "D:\\code\\app",
         useShell: true, env: {}, encoding: "auto",
@@ -83,6 +84,7 @@ function ensure() {
           { label: "release", args: [] },
         ],
         requires: [],
+        timeoutSecs: 0,
       },
     },
   ];
@@ -202,7 +204,7 @@ export const devApi = {
   listTasks: async () => (ensure(), tasks),
   addTask: async (input: any) => {
     const id = `t${Math.random().toString(36).slice(2, 8)}`;
-    tasks.push({ id, name: input.name, group: input.group ?? null, config: input.config, configOk: true });
+    tasks.push({ id, name: input.name, group: input.group ?? null, config: input.config, configOk: true, lastVariantIndex: null });
     return id;
   },
   updateTask: async (input: any) => {
@@ -218,6 +220,7 @@ export const devApi = {
     runs.unshift({
       id: runId, taskId, taskName: t?.name ?? taskId,
       variant: variantIndex != null && t ? t.config.variants[variantIndex]?.label ?? null : null,
+      variantIndex: variantIndex ?? null,
       extraArgs, status: "running", exitCode: null,
       startedAt: now(), finishedAt: null, durationMs: null, logPath: "",
     });
@@ -229,6 +232,7 @@ export const devApi = {
   },
   cancelTaskRun: async () => {},
   listTaskRuns: async (limit: number) => runs.slice(0, limit),
+  readTaskLog: async () => [],
   getTaskMaxParallel: async () => 1,
   setTaskMaxParallel: async () => {},
   openInExplorer: async () => {},

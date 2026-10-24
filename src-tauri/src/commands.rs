@@ -344,6 +344,7 @@ pub fn run_task(
         task_id: task_id.clone(),
         task_name: task.name.clone(),
         variant: variant_label,
+        variant_index,
         extra_args: extra_args.trim().to_string(),
         status: crate::types::TaskRunStatus::Queued,
         exit_code: None,
@@ -355,9 +356,12 @@ pub fn run_task(
     {
         let conn = state.db.lock().unwrap();
         db::insert_task_run(&conn, &run).map_err(|e| e.to_string())?;
+        // 记住该任务上次选的变体，供「运行本组」沿用
+        db::set_task_last_variant(&conn, &task_id, variant_index);
     }
     let req = crate::types::TaskRunRequest {
         run_id: run_id.clone(),
+        name: task.name.clone(),
         config: task.config,
         variant_index,
         extra_args: parsed_extra,
@@ -372,16 +376,35 @@ pub fn run_task(
     Ok(run_id)
 }
 
-/// 取消当前运行的任务（打进程树）。仅对正在运行的那个有效。
+/// 取消任务运行：运行中 -> 置取消标志（调度器 kill 进程树）；排队中 -> 标记为已取消，
+/// 调度器 pop 到它会跳过。
 #[tauri::command]
 pub fn cancel_task_run(state: tauri::State<'_, Arc<AppState>>, run_id: String) -> Result<(), String> {
-    let flag = state.task_cancel_flags.lock().unwrap().get(run_id.as_str()).cloned();
-    match flag {
-        Some(f) => {
-            f.store(true, std::sync::atomic::Ordering::SeqCst);
+    let flag = state
+        .task_cancel_flags
+        .lock()
+        .unwrap()
+        .get(run_id.as_str())
+        .cloned();
+    if let Some(f) = flag {
+        f.store(true, std::sync::atomic::Ordering::SeqCst);
+        return Ok(());
+    }
+    // 不在运行集合里：若仍是 queued，则取消排队
+    let conn = state.db.lock().unwrap();
+    match db::get_run_status(&conn, &run_id) {
+        Some(crate::types::TaskRunStatus::Queued) => {
+            db::finish_task_run(
+                &conn,
+                &run_id,
+                crate::types::TaskRunStatus::Cancelled,
+                None,
+                chrono::Utc::now().timestamp(),
+                0,
+            );
             Ok(())
         }
-        None => Err("该运行不在执行中，无法取消".to_string()),
+        _ => Err("该运行已结束，无法取消".to_string()),
     }
 }
 
@@ -396,10 +419,62 @@ pub fn set_task_max_parallel(
     state: tauri::State<'_, Arc<AppState>>,
     n: usize,
 ) -> Result<(), String> {
+    let v = n.clamp(1, 16);
     state
         .task_max_parallel
-        .store(n.clamp(1, 16), std::sync::atomic::Ordering::SeqCst);
+        .store(v, std::sync::atomic::Ordering::SeqCst);
+    let conn = state.db.lock().unwrap();
+    db::set_setting(&conn, "task_max_parallel", &v.to_string());
     Ok(())
+}
+
+/// 读取某次运行的日志文件内容（回看历史运行；本次会话实时跑过的走内存流即可）
+#[tauri::command]
+pub fn read_task_log(
+    state: tauri::State<'_, Arc<AppState>>,
+    run_id: String,
+) -> Result<Vec<crate::types::LogLine>, String> {
+    let dir = {
+        let conn = state.db.lock().unwrap();
+        conn.query_row(
+            "SELECT log_path FROM task_runs WHERE id=?1",
+            [&run_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .map_err(|_| "运行记录不存在".to_string())?
+    };
+    let dir = dir.ok_or("该运行没有日志文件".to_string())?;
+    let dir = std::path::Path::new(&dir);
+    // 取该运行目录下最新的 .log 文件
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .map_err(|e| format!("读日志目录失败: {e}"))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().and_then(|s| s.to_str()).map(|n| n.contains(".log")).unwrap_or(false))
+        .collect();
+    files.sort();
+    let latest = files.last().ok_or("无日志文件".to_string())?;
+    let content = std::fs::read_to_string(latest).map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for line in content.lines() {
+        // 落盘格式： "{ts} [{stream}] {text}"
+        let sp = match line.find(' ') {
+            Some(i) => i,
+            None => continue,
+        };
+        let ts: i64 = line[..sp].parse().unwrap_or(0);
+        let rest = &line[sp + 1..];
+        let (stream, text) = match (rest.strip_prefix('['), rest.find(']')) {
+            (Some(_), Some(end)) => (&rest[1..end], rest[end + 2..].to_string()),
+            _ => ("stdout", rest.to_string()),
+        };
+        out.push(crate::types::LogLine {
+            ts,
+            stream: stream.to_string(),
+            text,
+        });
+    }
+    Ok(out)
 }
 
 #[tauri::command]

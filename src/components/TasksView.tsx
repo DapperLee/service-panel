@@ -37,9 +37,11 @@ interface Props {
   services: ServiceView[];
   logs: Record<string, LogLine[]>;
   onClearLog: (id: string) => void;
+  /** 把从文件读回的历史日志注入共享日志流（仅当该 run 内存里还没有时） */
+  onInjectLog: (id: string, lines: LogLine[]) => void;
 }
 
-export default function TasksView({ services, logs, onClearLog }: Props) {
+export default function TasksView({ services, logs, onClearLog, onInjectLog }: Props) {
   const [tasks, setTasks] = useState<TaskView[]>([]);
   const [runs, setRuns] = useState<TaskRun[]>([]);
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
@@ -50,6 +52,7 @@ export default function TasksView({ services, logs, onClearLog }: Props) {
   const [selGroup, setSelGroup] = useState<string | null>(null);
   const [maxParallel, setMaxParallel] = useState(1);
   const [runningGroup, setRunningGroup] = useState(false);
+  const [historyTask, setHistoryTask] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -101,12 +104,12 @@ export default function TasksView({ services, logs, onClearLog }: Props) {
   const runGroup = async () => {
     const list = filtered.filter((t) => t.configOk);
     if (list.length === 0) return;
-    if (!confirm(`运行「${selGroup ?? "全部"}」下的 ${list.length} 个任务？`)) return;
+    if (!confirm(`运行「${selGroup ?? "全部"}」下的 ${list.length} 个任务？（各按其上次选的变体）`)) return;
     setRunningGroup(true);
     try {
       for (const t of list) {
-        // 用默认参数（不选变体）；并发由后端队列按并发数调度
-        await api.runTask(t.id, null, "");
+        // 用该任务上次运行的变体（没跑过则默认参数）
+        await api.runTask(t.id, t.lastVariantIndex ?? null, "");
       }
       load();
     } catch (e) {
@@ -125,6 +128,28 @@ export default function TasksView({ services, logs, onClearLog }: Props) {
       alert(String(e));
     }
   };
+
+  // 每个任务最近一次运行（用于卡片结果徽章）
+  const lastRunByTask = new Map<string, TaskRun>();
+  for (const r of runs) if (!lastRunByTask.has(r.taskId)) lastRunByTask.set(r.taskId, r);
+
+  // 历史按任务筛选
+  const visibleRuns = historyTask ? runs.filter((r) => r.taskId === historyTask) : runs;
+
+  // 选中一个已结束的运行时，若内存无日志则从文件读回
+  useEffect(() => {
+    if (!selectedRun) return;
+    if (logs[selectedRun] && logs[selectedRun].length > 0) return;
+    const r = runs.find((x) => x.id === selectedRun);
+    if (!r || r.status === "running" || r.status === "queued") return;
+    api
+      .readTaskLog(selectedRun)
+      .then((lines) => {
+        if (lines.length) onInjectLog(selectedRun, lines);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRun, runs]);
 
   return (
     <div className="body">
@@ -183,11 +208,31 @@ export default function TasksView({ services, logs, onClearLog }: Props) {
           </div>
         ) : (
           <div className="grid">
-            {filtered.map((t) => (
+            {filtered.map((t) => {
+              const last = lastRunByTask.get(t.id);
+              return (
               <div className="card" key={t.id}>
                 <div className="head">
                   <span className="name">{t.name}</span>
                   {t.group && <span className="tag">{t.group}</span>}
+                  {last && (
+                    <span
+                      className="tag"
+                      style={{ color: STATUS_COLOR[last.status] }}
+                      title={`上次：${STATUS_LABEL[last.status]} ${new Date(
+                        last.startedAt * 1000
+                      ).toLocaleString("zh-CN")}`}
+                    >
+                      {last.status === "success"
+                        ? "✓"
+                        : last.status === "failed"
+                        ? "✗"
+                        : last.status === "cancelled"
+                        ? "⊘"
+                        : "●"}{" "}
+                      {fmtDur(last.durationMs)}
+                    </span>
+                  )}
                 </div>
                 <div className="meta">
                   <span className="mono" title={t.config.command}>
@@ -225,20 +270,30 @@ export default function TasksView({ services, logs, onClearLog }: Props) {
                   </button>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
         <div className="section-head" style={{ marginTop: 18 }}>
           <strong>运行历史</strong>
+          {historyTask && (
+            <button
+              className="ghost"
+              style={{ marginLeft: 10 }}
+              onClick={() => setHistoryTask(null)}
+            >
+              只看：{tasks.find((t) => t.id === historyTask)?.name ?? historyTask} ✕
+            </button>
+          )}
         </div>
-        {runs.length === 0 ? (
+        {visibleRuns.length === 0 ? (
           <div style={{ color: "var(--text-dim)", padding: "8px 2px" }}>暂无运行记录。</div>
         ) : (
           <div className="event-list">
-            {runs.map((r) => (
+            {visibleRuns.map((r) => (
               <div
-                className="event-row"
+                className="event-row run-row"
                 key={r.id}
                 style={{ cursor: "pointer" }}
                 onClick={() => setSelectedRun(r.id)}
@@ -254,6 +309,30 @@ export default function TasksView({ services, logs, onClearLog }: Props) {
                 <span className="event-reason">
                   {r.exitCode != null && r.exitCode !== 0 ? `exit ${r.exitCode}` : ""}
                   {r.extraArgs ? ` ${r.extraArgs}` : ""}
+                </span>
+                <span className="run-actions" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    className="ghost"
+                    title="只看该任务的历史"
+                    onClick={() => setHistoryTask(r.taskId)}
+                  >
+                    筛选
+                  </button>
+                  <button
+                    className="ghost"
+                    title="按这次运行的变体和参数重跑"
+                    onClick={() =>
+                      api
+                        .runTask(r.taskId, r.variantIndex, r.extraArgs)
+                        .then((id) => {
+                          setSelectedRun(id);
+                          load();
+                        })
+                        .catch((e) => alert(String(e)))
+                    }
+                  >
+                    重跑
+                  </button>
                 </span>
               </div>
             ))}

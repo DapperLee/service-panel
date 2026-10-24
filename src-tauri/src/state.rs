@@ -164,6 +164,8 @@ pub struct AppState {
     pub task_active: Arc<Mutex<std::collections::HashSet<String>>>,
     /// 最大并发运行数（1 = 串行；可调大做并行）。会话级设置，重启回默认。
     pub task_max_parallel: Arc<std::sync::atomic::AtomicUsize>,
+    /// 系统通知回调（title, body），setup 里注入
+    pub notify: Arc<Mutex<Option<Arc<dyn Fn(String, String) + Send + Sync>>>>,
 }
 
 impl AppState {
@@ -181,6 +183,7 @@ impl AppState {
             task_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
             task_active: Arc::new(Mutex::new(std::collections::HashSet::new())),
             task_max_parallel: Arc::new(std::sync::atomic::AtomicUsize::new(1)),
+            notify: Arc::new(Mutex::new(None)),
         }
     }
 

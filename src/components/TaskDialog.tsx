@@ -151,6 +151,16 @@ export default function TaskDialog({ editing, services, onClose, onSaved }: Prop
               <option value="gbk">gbk</option>
             </select>
           </div>
+          <div className="field">
+            <label>超时(秒，0=不限)</label>
+            <input
+              type="number"
+              min={0}
+              value={config.timeoutSecs}
+              onChange={(e) => patch({ timeoutSecs: Math.max(0, Number(e.target.value) || 0) })}
+              placeholder="0"
+            />
+          </div>
         </div>
 
         <div className="field">
