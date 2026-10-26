@@ -70,7 +70,7 @@ fn get_spec(state: &Arc<AppState>, id: &str) -> Option<ServiceSpec> {
     state
         .runtimes
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .get(id)
         .map(|r| r.spec.clone())
 }
@@ -80,7 +80,7 @@ fn get_template_and_ok(state: &Arc<AppState>, id: &str) -> Option<(ServiceSpec, 
     state
         .runtimes
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .get(id)
         .map(|r| (r.spec_template.clone(), r.config_ok))
 }
@@ -213,7 +213,7 @@ fn start_impl(state: &Arc<AppState>, id: &str) -> Result<(), String> {
     let had_live = state
         .runtimes
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .get(id)
         .map(|r| r.live.is_some() || r.adopted.is_some())
         .unwrap_or(false);
@@ -483,7 +483,7 @@ pub fn restart(state: &Arc<AppState>, id: &str) -> Result<(), String> {
     let was_running = state
         .runtimes
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .get(id)
         .map(|r| r.desired == Desired::Running)
         .unwrap_or(false);
@@ -626,7 +626,7 @@ mod tests {
         state
             .runtimes
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert("s".to_string(), Runtime::new(spec.clone()));
 
         let emitter: LogEmitter = Arc::new(|_| {});

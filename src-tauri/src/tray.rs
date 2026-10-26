@@ -105,7 +105,7 @@ fn toggle_service(app: &AppHandle, state: &Arc<AppState>, sid: &str) {
     let running = state
         .runtimes
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .get(sid)
         .map(|r| r.state == State::Running)
         .unwrap_or(false);

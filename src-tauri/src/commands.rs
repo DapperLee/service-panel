@@ -403,7 +403,7 @@ pub fn cancel_task_run(
     let flag = state
         .task_cancel_flags
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .get(run_id.as_str())
         .cloned();
     if let Some(f) = flag {

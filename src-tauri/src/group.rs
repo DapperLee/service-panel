@@ -231,7 +231,7 @@ fn run_start(app: &AppHandle, state: &Arc<AppState>, ordered: &[String], group: 
             let live_spec = state
                 .runtimes
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .get(id)
                 .map(|r| r.spec.clone());
             if let Some(spec) = live_spec {
