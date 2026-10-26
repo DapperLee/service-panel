@@ -9,7 +9,7 @@ fn set_state(state: &Arc<AppState>, id: &str, new: State, err: Option<String>) {
     let mut pid = None;
     let mut from = None;
     {
-        let mut rts = state.runtimes.lock().unwrap();
+        let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(rt) = rts.get_mut(id) {
             from = Some(rt.state);
             rt.state = new;
@@ -32,7 +32,7 @@ fn set_state(state: &Arc<AppState>, id: &str, new: State, err: Option<String>) {
 /// 看得见；用户重新保存出好配置后，这条陈旧告警会被自动清掉。
 pub fn ensure_runtime(state: &Arc<AppState>, id: &str, spec: ServiceSpec, config_ok: bool) {
     let broken_msg = || crate::db::CONFIG_BROKEN_MSG.to_string();
-    let mut rts = state.runtimes.lock().unwrap();
+    let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
     match rts.get_mut(id) {
         Some(rt) => {
             // 已存在则刷新 config_ok 与模板。运行中的服务**不覆盖活动 spec**
@@ -109,7 +109,12 @@ fn resolve_spec_port(spec: &ServiceSpec, port: u16) -> ServiceSpec {
 }
 
 fn set_desired(state: &Arc<AppState>, id: &str, desired: Desired) {
-    if let Some(rt) = state.runtimes.lock().unwrap().get_mut(id) {
+    if let Some(rt) = state
+        .runtimes
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_mut(id)
+    {
         rt.desired = desired;
     }
 }
@@ -122,12 +127,16 @@ pub struct OpGuard {
 }
 impl Drop for OpGuard {
     fn drop(&mut self) {
-        self.state.ops.lock().unwrap().remove(&self.id);
+        self.state
+            .ops
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.id);
     }
 }
 
 fn try_lock_op(state: &Arc<AppState>, id: &str) -> Option<OpGuard> {
-    let mut ops = state.ops.lock().unwrap();
+    let mut ops = state.ops.lock().unwrap_or_else(|e| e.into_inner());
     if ops.contains(id) {
         return None;
     }
@@ -180,12 +189,17 @@ fn start_impl(state: &Arc<AppState>, id: &str) -> Result<(), String> {
             )?
         };
         spec = resolve_spec_port(&spec, chosen);
-        let mut rts = state.runtimes.lock().unwrap();
+        let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(rt) = rts.get_mut(id) {
             rt.spec = spec.clone();
             rt.chosen_port = Some(chosen);
         }
-    } else if let Some(rt) = state.runtimes.lock().unwrap().get_mut(id) {
+    } else if let Some(rt) = state
+        .runtimes
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_mut(id)
+    {
         // 非自动端口：用模板原样，清掉上次自动端口残留
         rt.spec = spec.clone();
         rt.chosen_port = None;
@@ -224,7 +238,7 @@ fn start_impl(state: &Arc<AppState>, id: &str) -> Result<(), String> {
                         #[cfg(unix)]
                         guard: spawned.guard,
                     };
-                    let mut rts = state.runtimes.lock().unwrap();
+                    let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(rt) = rts.get_mut(id) {
                         rt.live = Some(live);
                     }
@@ -241,7 +255,7 @@ fn start_impl(state: &Arc<AppState>, id: &str) -> Result<(), String> {
         Ok(()) => {
             // 启动成功：对所有驱动重置重试/健康计数并记录稳定运行起点
             {
-                let mut rts = state.runtimes.lock().unwrap();
+                let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(rt) = rts.get_mut(id) {
                     rt.unhealthy_streak = 0;
                     rt.fail_streak = 0;
@@ -284,7 +298,7 @@ pub fn kill_guard(live: &mut LiveProc) {
 
 fn command_stop(state: &Arc<AppState>, id: &str, timeout_secs: u64) {
     let (live, adopted) = {
-        let mut rts = state.runtimes.lock().unwrap();
+        let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
         match rts.get_mut(id) {
             Some(r) => (r.live.take(), r.adopted.take()),
             None => (None, None),
@@ -409,7 +423,7 @@ pub fn try_adopt(state: &Arc<AppState>, id: &str) -> Option<u32> {
     };
 
     {
-        let mut rts = state.runtimes.lock().unwrap();
+        let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
         let rt = rts.get_mut(id)?;
         if rt.live.is_some() {
             return None; // 已经有面板自己启动的实例，不重复认领
@@ -483,7 +497,7 @@ pub fn restart(state: &Arc<AppState>, id: &str) -> Result<(), String> {
 pub fn remove(state: &Arc<AppState>, id: &str) {
     crate::logsrc::detach(state, id);
     let live = {
-        let mut rts = state.runtimes.lock().unwrap();
+        let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
         rts.remove(id).and_then(|r| r.live)
     };
     if let Some(mut live) = live {
@@ -506,7 +520,7 @@ pub fn remove(state: &Arc<AppState>, id: &str) {
 #[allow(dead_code)] // Windows 上没人调用（Job Object 已兜底），但代码要保持可编译
 pub fn reap_children_on_exit(state: &Arc<AppState>) {
     let (mut procs, mut tails) = {
-        let mut rts = state.runtimes.lock().unwrap();
+        let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
         let mut procs = Vec::new();
         let mut tails = Vec::new();
         for rt in rts.values_mut() {
@@ -616,11 +630,11 @@ mod tests {
             .insert("s".to_string(), Runtime::new(spec.clone()));
 
         let emitter: LogEmitter = Arc::new(|_| {});
-        *state.emitter.lock().unwrap() = Some(emitter.clone());
+        *state.emitter.lock().unwrap_or_else(|e| e.into_inner()) = Some(emitter.clone());
         let sink = state.log_sink("s").expect("日志写入端应可用");
         let spawned = command::spawn(&spec, "s", sink, emitter).unwrap();
         {
-            let mut rts = state.runtimes.lock().unwrap();
+            let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
             let rt = rts.get_mut("s").unwrap();
             rt.state = State::Running;
             rt.desired = Desired::Running;

@@ -19,7 +19,12 @@ const TAIL_PRIME_BYTES: u64 = 64 * 1024;
 
 /// 为服务挂载日志源（幂等：先卸再挂）
 pub fn attach(state: &Arc<AppState>, id: &str) {
-    let spec = match state.runtimes.lock().unwrap().get(id) {
+    let spec = match state
+        .runtimes
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(id)
+    {
         Some(r) => r.spec.clone(),
         None => return,
     };
@@ -49,7 +54,7 @@ pub fn attach(state: &Arc<AppState>, id: &str) {
 /// 卸载日志源：让文件尾随线程**真正退出**（send + join），并杀掉 docker 尾随子进程。
 pub fn detach(state: &Arc<AppState>, id: &str) {
     let (tail, stop_tx, join) = {
-        let mut rts = state.runtimes.lock().unwrap();
+        let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
         match rts.get_mut(id) {
             Some(r) => (r.tail.take(), r.tail_stop.take(), r.tail_join.take()),
             None => (None, None, None),
@@ -151,7 +156,7 @@ fn start_docker_tail(state: &Arc<AppState>, id: &str, spec: &crate::types::Servi
         sink,
     );
 
-    let mut rts = state.runtimes.lock().unwrap();
+    let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(r) = rts.get_mut(id) {
         r.tail = Some(LogTail {
             child,
@@ -169,7 +174,7 @@ fn start_file_tail(state: &Arc<AppState>, id: &str, spec: &crate::types::Service
     let path = spec.log_path.trim().to_string();
     let (tx, rx) = mpsc::channel::<()>();
     {
-        let mut rts = state.runtimes.lock().unwrap();
+        let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(r) = rts.get_mut(id) {
             r.tail_stop = Some(tx);
         }
@@ -250,7 +255,7 @@ fn start_file_tail(state: &Arc<AppState>, id: &str, spec: &crate::types::Service
         }
     });
 
-    let mut rts = state.runtimes.lock().unwrap();
+    let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(r) = rts.get_mut(id) {
         r.tail_join = Some(handle);
     }

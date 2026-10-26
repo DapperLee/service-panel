@@ -52,7 +52,7 @@ pub struct ImportOutcome {
 /// 导出所有分组与服务到指定路径（明文 JSON，pretty）。返回导出的服务数。
 pub fn export_to_file(state: &Arc<AppState>, path: &str) -> Result<usize, String> {
     let (groups, services) = {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
         let gs = db::list_groups(&conn).map_err(|e| e.to_string())?;
         let sv = db::list_services(&conn).map_err(|e| e.to_string())?;
         (gs, sv)
@@ -121,13 +121,19 @@ pub fn import_from_file(
     let mut stopped = 0usize;
     if replace {
         // 先停所有正在跑的服务（走 manager::stop 保证日志源卸载 + Job Object 回收）
-        let ids: Vec<String> = state.runtimes.lock().unwrap().keys().cloned().collect();
+        let ids: Vec<String> = state
+            .runtimes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect();
         for id in ids {
             let _ = manager::stop(state, &id);
             stopped += 1;
         }
         {
-            let conn = state.db.lock().unwrap();
+            let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
             conn.execute("DELETE FROM services", [])
                 .map_err(|e| e.to_string())?;
             conn.execute("DELETE FROM groups", [])
@@ -135,13 +141,17 @@ pub fn import_from_file(
             conn.execute("DELETE FROM service_events", [])
                 .map_err(|e| e.to_string())?;
         }
-        state.runtimes.lock().unwrap().clear();
+        state
+            .runtimes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     // 分组：merge 模式下若同 id 已存在则跳过（保留现有名字）
     let mut groups_added = 0usize;
     {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
         for g in &file.groups {
             let exists: bool = conn
                 .query_row("SELECT 1 FROM groups WHERE id=?1", [&g.id], |_| Ok(true))
@@ -157,7 +167,7 @@ pub fn import_from_file(
     let mut services_skipped = 0usize;
     for s in file.services {
         let exists = {
-            let conn = state.db.lock().unwrap();
+            let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
             conn.query_row("SELECT 1 FROM services WHERE id=?1", [&s.id], |_| Ok(true))
                 .unwrap_or(false)
         };
@@ -166,7 +176,7 @@ pub fn import_from_file(
             continue;
         }
         {
-            let conn = state.db.lock().unwrap();
+            let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::insert_service(
                 &conn,
                 &s.id,
@@ -220,7 +230,7 @@ mod tests {
     fn export_then_import_restores_env_values_verbatim() {
         let (src, src_dir) = state();
         {
-            let conn = src.db.lock().unwrap();
+            let conn = src.db.lock().unwrap_or_else(|e| e.into_inner());
             db::create_group(&conn, "g1", "分组一").unwrap();
             db::insert_service(
                 &conn,
@@ -263,7 +273,7 @@ mod tests {
         );
 
         let back = {
-            let conn = dst.db.lock().unwrap();
+            let conn = dst.db.lock().unwrap_or_else(|e| e.into_inner());
             db::list_services(&conn).unwrap()
         };
         assert_eq!(back.len(), 2);
@@ -304,7 +314,7 @@ mod tests {
     fn export_aborts_when_any_service_config_is_unreadable() {
         let (src, src_dir) = state();
         {
-            let conn = src.db.lock().unwrap();
+            let conn = src.db.lock().unwrap_or_else(|e| e.into_inner());
             db::insert_service(
                 &conn,
                 "ok",

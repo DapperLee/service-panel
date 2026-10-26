@@ -302,7 +302,7 @@ pub struct PortAudit {
 pub fn audit(state: &Arc<AppState>) -> Vec<PortAudit> {
     // 展示名在 services 表里（spec 只有驱动字段），取轻量列，不为审计去解密 spec
     let names: HashMap<String, String> = {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
         crate::db::list_static(&conn)
             .unwrap_or_default()
             .into_iter()
@@ -310,7 +310,7 @@ pub fn audit(state: &Arc<AppState>) -> Vec<PortAudit> {
             .collect()
     };
     let snapshot: Vec<(String, crate::types::HealthKind, String, Option<u32>)> = {
-        let rts = state.runtimes.lock().unwrap();
+        let rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
         rts.iter()
             .map(|(id, r)| {
                 (

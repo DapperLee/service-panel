@@ -65,7 +65,7 @@ fn emit_progress(
 
 /// id -> 服务名（供进度事件显示）。用 list_static：只为拿名字而解密全部 spec 是浪费。
 fn names_of(state: &Arc<AppState>) -> HashMap<String, String> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::list_static(&conn)
         .unwrap_or_default()
         .into_iter()
@@ -76,7 +76,7 @@ fn names_of(state: &Arc<AppState>) -> HashMap<String, String> {
 /// 构建 id -> spec 映射。读内存 Runtime 的 spec 快照（启动时已解密缓存），
 /// 避免每次批量启动都对所有服务重做一遍 DPAPI 解密。
 fn spec_map(state: &Arc<AppState>) -> HashMap<String, ServiceSpec> {
-    let rts = state.runtimes.lock().unwrap();
+    let rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
     rts.iter()
         .map(|(id, r)| (id.clone(), r.spec.clone()))
         .collect()
@@ -84,7 +84,7 @@ fn spec_map(state: &Arc<AppState>) -> HashMap<String, ServiceSpec> {
 
 /// 组内成员（按 sort_order 稳定排序）
 fn members_of(state: &Arc<AppState>, gid: &str) -> (Vec<String>, String) {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
     let name: String = conn
         .query_row("SELECT name FROM groups WHERE id=?1", [gid], |r| r.get(0))
         .unwrap_or_else(|_| "分组".to_string());
@@ -156,7 +156,7 @@ pub fn topo_order(
 }
 
 fn state_is_up(state: &Arc<AppState>, id: &str) -> bool {
-    let rts = state.runtimes.lock().unwrap();
+    let rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
     matches!(
         rts.get(id).map(|r| r.state),
         Some(State::Running | State::Starting | State::Restarting | State::Unhealthy)
@@ -212,7 +212,7 @@ fn run_start(app: &AppHandle, state: &Arc<AppState>, ordered: &[String], group: 
         }
 
         let already = {
-            let rts = state.runtimes.lock().unwrap();
+            let rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
             matches!(
                 rts.get(id).map(|r| r.state),
                 Some(State::Running | State::Starting | State::Restarting)
@@ -310,7 +310,7 @@ pub fn ordered_members(
 /// 全局（所有服务）的拓扑顺序，用于「全部启动」按依赖定序
 pub fn ordered_all(state: &Arc<AppState>) -> Result<Vec<String>, Vec<String>> {
     let members: Vec<String> = {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::list_static(&conn)
             .unwrap_or_default()
             .into_iter()
@@ -329,11 +329,15 @@ struct GroupOpGuard {
 }
 impl Drop for GroupOpGuard {
     fn drop(&mut self) {
-        self.state.group_ops.lock().unwrap().remove(&self.key);
+        self.state
+            .group_ops
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.key);
     }
 }
 fn try_lock_group(state: &Arc<AppState>, key: &str) -> Option<GroupOpGuard> {
-    let mut set = state.group_ops.lock().unwrap();
+    let mut set = state.group_ops.lock().unwrap_or_else(|e| e.into_inner());
     if set.contains(key) {
         return None;
     }
@@ -369,7 +373,7 @@ fn ordered_all_or_fallback(state: &Arc<AppState>) -> Vec<String> {
     if let Ok(o) = ordered_all(state) {
         return o;
     }
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::list_static(&conn)
         .unwrap_or_default()
         .into_iter()

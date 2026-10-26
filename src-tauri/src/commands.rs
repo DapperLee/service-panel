@@ -13,10 +13,10 @@ pub fn list_services(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<Servi
     // 静态列走 DB（不解密），spec + 动态状态走内存 Runtime（启动时已解密缓存）。
     // 避免每 2.5s 轮询都对全部服务做一次 DPAPI 解密。
     let statics = {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::list_static(&conn).map_err(|e| e.to_string())?
     };
-    let rts = state.runtimes.lock().unwrap();
+    let rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
     let views = statics
         .into_iter()
         .map(|(id, name, group_id, sort_order, enabled)| {
@@ -50,7 +50,7 @@ pub fn add_service(
 ) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
     {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::insert_service(
             &conn,
             &id,
@@ -75,7 +75,7 @@ pub fn update_service(
 ) -> Result<(), String> {
     let id = input.id.clone().ok_or("缺少 id")?;
     {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::update_service(
             &conn,
             &id,
@@ -104,7 +104,7 @@ pub async fn delete_service(
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let _ = manager::stop(&st, &id2);
         {
-            let conn = st.db.lock().unwrap();
+            let conn = st.db.lock().unwrap_or_else(|e| e.into_inner());
             db::delete_service(&conn, &id2).map_err(|e| e.to_string())?;
         }
         manager::remove(&st, &id2);
@@ -170,7 +170,7 @@ pub fn stop_all(
 
 #[tauri::command]
 pub fn list_groups(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<db::GroupRow>, String> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::list_groups(&conn).map_err(|e| e.to_string())
 }
 
@@ -187,13 +187,13 @@ pub fn save_group(
     }
     let gid = match id {
         Some(gid) => {
-            let conn = state.db.lock().unwrap();
+            let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::rename_group(&conn, &gid, &name).map_err(|e| e.to_string())?;
             gid
         }
         None => {
             let gid = uuid::Uuid::new_v4().to_string();
-            let conn = state.db.lock().unwrap();
+            let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::create_group(&conn, &gid, &name).map_err(|e| e.to_string())?;
             gid
         }
@@ -203,7 +203,7 @@ pub fn save_group(
 
 #[tauri::command]
 pub fn delete_group(state: tauri::State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::delete_group(&conn, &id).map_err(|e| e.to_string())
 }
 
@@ -241,7 +241,7 @@ pub fn recent_events(
     state: tauri::State<'_, Arc<AppState>>,
     limit: i64,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
     let rows = db::recent_events(&conn, limit.max(1)).map_err(|e| e.to_string())?;
     Ok(rows
         .into_iter()
@@ -284,7 +284,7 @@ pub fn quit_app(app: tauri::AppHandle) {
 pub fn list_tasks(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<Vec<crate::types::TaskView>, String> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::list_tasks(&conn).map_err(|e| e.to_string())
 }
 
@@ -294,7 +294,7 @@ pub fn add_task(
     input: TaskInput,
 ) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::insert_task(
         &conn,
         &id,
@@ -309,7 +309,7 @@ pub fn add_task(
 #[tauri::command]
 pub fn update_task(state: tauri::State<'_, Arc<AppState>>, input: TaskInput) -> Result<(), String> {
     let id = input.id.clone().ok_or("缺少 id")?;
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::update_task(
         &conn,
         &id,
@@ -323,7 +323,7 @@ pub fn update_task(state: tauri::State<'_, Arc<AppState>>, input: TaskInput) -> 
 
 #[tauri::command]
 pub fn delete_task(state: tauri::State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::delete_task(&conn, &id).map_err(|e| e.to_string())
 }
 
@@ -336,7 +336,7 @@ pub fn run_task(
     extra_args: String,
 ) -> Result<String, String> {
     let task = {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::list_tasks(&conn)
             .map_err(|e| e.to_string())?
             .into_iter()
@@ -371,7 +371,7 @@ pub fn run_task(
         log_path: String::new(),
     };
     {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::insert_task_run(&conn, &run).map_err(|e| e.to_string())?;
         // 记住该任务上次选的变体，供「运行本组」沿用
         db::set_task_last_variant(&conn, &task_id, variant_index);
@@ -384,7 +384,7 @@ pub fn run_task(
         extra_args: parsed_extra,
     };
     {
-        let tx = state.task_tx.lock().unwrap();
+        let tx = state.task_tx.lock().unwrap_or_else(|e| e.into_inner());
         match tx.as_ref() {
             Some(tx) => tx.send(req).map_err(|_| "任务队列不可用".to_string())?,
             None => return Err("任务队列未就绪".to_string()),
@@ -411,7 +411,7 @@ pub fn cancel_task_run(
         return Ok(());
     }
     // 不在运行集合里：若仍是 queued，则取消排队
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
     match db::get_run_status(&conn, &run_id) {
         Some(crate::types::TaskRunStatus::Queued) => {
             db::finish_task_run(
@@ -445,7 +445,7 @@ pub fn set_task_max_parallel(
     state
         .task_max_parallel
         .store(v, std::sync::atomic::Ordering::SeqCst);
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::set_setting(&conn, "task_max_parallel", &v.to_string());
     Ok(())
 }
@@ -457,7 +457,7 @@ pub fn read_task_log(
     run_id: String,
 ) -> Result<Vec<crate::types::LogLine>, String> {
     let dir = {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
         conn.query_row(
             "SELECT log_path FROM task_runs WHERE id=?1",
             [&run_id],
@@ -515,7 +515,7 @@ pub fn list_task_runs(
     state: tauri::State<'_, Arc<AppState>>,
     limit: i64,
 ) -> Result<Vec<crate::types::TaskRun>, String> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::list_task_runs(&conn, limit.max(1)).map_err(|e| e.to_string())
 }
 
@@ -586,7 +586,7 @@ pub fn open_in_terminal(path: String) -> Result<(), String> {
 pub fn list_bookmarks(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<Vec<crate::types::Bookmark>, String> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::list_bookmarks(&conn).map_err(|e| e.to_string())
 }
 
@@ -597,14 +597,14 @@ pub fn add_bookmark(
     path: String,
 ) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::insert_bookmark(&conn, &id, &name, &path).map_err(|e| e.to_string())?;
     Ok(id)
 }
 
 #[tauri::command]
 pub fn delete_bookmark(state: tauri::State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::delete_bookmark(&conn, &id).map_err(|e| e.to_string())
 }
 

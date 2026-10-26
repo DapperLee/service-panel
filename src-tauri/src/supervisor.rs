@@ -37,7 +37,7 @@ pub fn spawn_supervisor(state: Arc<AppState>) {
 fn takeover_and_autostart(state: &Arc<AppState>) {
     // 同步外部驱动真实状态：探测同样分块并发，服务多时启动不再被 N 次串行 sc query 拖慢
     let probes: Vec<(String, DriverKind, String)> = {
-        let rts = state.runtimes.lock().unwrap();
+        let rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
         rts.iter()
             .filter_map(|(id, r)| match r.spec.driver {
                 DriverKind::WindowsService => Some((
@@ -84,7 +84,7 @@ fn takeover_and_autostart(state: &Arc<AppState>) {
             State::Stopped
         };
         {
-            let mut rts = state.runtimes.lock().unwrap();
+            let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(rt) = rts.get_mut(&id) {
                 rt.state = st;
                 // 接管时若已在运行，期望态也置 Running，避免被当成用户已停止
@@ -101,7 +101,7 @@ fn takeover_and_autostart(state: &Arc<AppState>) {
     // Command 驱动没有外部注册表可查状态：按「命令行唯一 + 声明端口对得上」认领
     // 已在跑的进程。必须排在自启之前，否则会对同一个服务再启一份去撞端口。
     let command_ids: Vec<String> = {
-        let rts = state.runtimes.lock().unwrap();
+        let rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
         rts.iter()
             .filter(|(_, r)| r.spec.driver == DriverKind::Command && r.live.is_none())
             .map(|(id, _)| id.clone())
@@ -113,7 +113,7 @@ fn takeover_and_autostart(state: &Arc<AppState>) {
 
     // 拉起 enabled 且当前为 Stopped 的服务
     let autostart: Vec<String> = {
-        let rts = state.runtimes.lock().unwrap();
+        let rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
         rts.iter()
             .filter(|(_, r)| r.state == State::Stopped)
             .map(|(id, _)| id.clone())
@@ -162,7 +162,7 @@ fn tick(state: &Arc<AppState>, sys: &System) {
 
     // —— Phase A：锁内只做廉价操作（资源采样、Command try_wait 非阻塞），采集探测任务 ——
     {
-        let mut rts = state.runtimes.lock().unwrap();
+        let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
         let now = now_ms();
         for (id, rt) in rts.iter_mut() {
             // 1) 资源采样（sys 已刷新，无 I/O）。
@@ -270,8 +270,10 @@ fn tick(state: &Arc<AppState>, sys: &System) {
                 && now >= rt.next_health_at
             {
                 health_jobs.push((id.clone(), rt.spec.healthcheck.clone()));
-                let every_ms = rt.spec.healthcheck.interval_secs.max(1) as i64 * 1000;
-                rt.next_health_at = now + every_ms;
+                // 夹到合理上限并 saturating，避免用户填超大间隔在 debug 下 *1000 溢出 panic
+                let every_ms = (rt.spec.healthcheck.interval_secs.clamp(1, 86_400) as i64)
+                    .saturating_mul(1000);
+                rt.next_health_at = now.saturating_add(every_ms);
             }
         }
     }
@@ -321,7 +323,7 @@ fn tick(state: &Arc<AppState>, sys: &System) {
 
     // —— Phase C：回锁应用结果 + 排期重启（探测期间状态可能被用户改动，需重新校验）——
     {
-        let mut rts = state.runtimes.lock().unwrap();
+        let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
         let now = now_ms();
         for (id, rt) in rts.iter_mut() {
             // 稳定运行超过 30s：清零重试计数，避免偶发崩溃累积到上限后不再自愈
@@ -432,7 +434,7 @@ fn tick(state: &Arc<AppState>, sys: &System) {
         // 「谁把它拉起来的」必须落到服务自己的日志里：mac 上反馈「停止后自己又起来了」，
         // 光看状态变 Running 分不清是自动重启、启动自启还是用户点的
         let why = {
-            let rts = state.runtimes.lock().unwrap();
+            let rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
             rts.get(&id).map(|r| {
                 format!(
                     "[panel] 自动重启：退避到期（第 {} 次尝试，上次原因：{}）",
@@ -447,7 +449,7 @@ fn tick(state: &Arc<AppState>, sys: &System) {
         if let Err(e) = manager::start(state, &id) {
             // 启动失败（多为“该服务正在执行其它操作”锁占用）：重新排期，别卡死不再拉
             let now = now_ms();
-            let mut rts = state.runtimes.lock().unwrap();
+            let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(rt) = rts.get_mut(&id) {
                 rt.state = State::Crashed;
                 rt.next_attempt_at = now + 3000;
@@ -479,8 +481,8 @@ fn maybe_schedule_restart(rt: &mut crate::state::Runtime, now: i64) {
                 return;
             }
             let shift = (rt.fail_streak - 1).min(5);
-            let backoff = (base * (1i64 << shift)).min(60);
-            rt.next_attempt_at = now + backoff * 1000;
+            let backoff = base.saturating_mul(1i64 << shift).min(60);
+            rt.next_attempt_at = now.saturating_add(backoff * 1000);
             // 不立即重启，等下一个 tick 到点再启，保证退避生效
         }
     }
@@ -562,19 +564,23 @@ mod probe_schedule {
             rusqlite::Connection::open_in_memory().unwrap(),
             std::env::temp_dir(),
         ));
-        state.runtimes.lock().unwrap().insert(
-            "h".to_string(),
-            Runtime {
-                state: State::Running,
-                desired: Desired::Running,
-                ..Runtime::new(spec)
-            },
-        );
+        state
+            .runtimes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                "h".to_string(),
+                Runtime {
+                    state: State::Running,
+                    desired: Desired::Running,
+                    ..Runtime::new(spec)
+                },
+            );
         state
     }
 
     fn streak_and_next(state: &Arc<AppState>) -> (u32, i64) {
-        let rts = state.runtimes.lock().unwrap();
+        let rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
         let rt = rts.get("h").unwrap();
         (rt.unhealthy_streak, rt.next_health_at)
     }
@@ -695,14 +701,18 @@ mod tests {
             desired: Desired::Running,
             ..Runtime::new(spec)
         };
-        state.runtimes.lock().unwrap().insert("sp".into(), rt);
+        state
+            .runtimes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert("sp".into(), rt);
 
         let mut sys = System::new_all();
         tick(&state, &sys); // 第一拍：探测回传宿主 PID
         sys.refresh_processes();
         tick(&state, &sys); // 第二拍：按 PID 采样
 
-        let rts = state.runtimes.lock().unwrap();
+        let rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
         let rt = rts.get("sp").unwrap();
         assert_eq!(rt.ext_pid, probe.pid, "Phase C 没把探测回来的 PID 存下");
         assert!(

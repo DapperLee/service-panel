@@ -124,7 +124,7 @@ fn execute(state: &Arc<AppState>, req: TaskRunRequest, cancel: Arc<std::sync::at
 
     // 排队期间被取消：DB 状态已是 cancelled，直接跳过不执行
     {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
         if db::get_run_status(&conn, &req.run_id) == Some(TaskRunStatus::Cancelled) {
             return;
         }
@@ -135,7 +135,7 @@ fn execute(state: &Arc<AppState>, req: TaskRunRequest, cancel: Arc<std::sync::at
     let sink = match LogSink::open(&run_dir) {
         Ok(s) => s,
         Err(e) => {
-            let conn = state.db.lock().unwrap();
+            let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::finish_task_run(
                 &conn,
                 &req.run_id,
@@ -152,7 +152,7 @@ fn execute(state: &Arc<AppState>, req: TaskRunRequest, cancel: Arc<std::sync::at
     let command = cfg.command.trim().to_string();
     if command.is_empty() {
         logs::system_message("[task] 命令为空", &req.run_id, &emitter, &sink);
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::finish_task_run(
             &conn,
             &req.run_id,
@@ -167,7 +167,7 @@ fn execute(state: &Arc<AppState>, req: TaskRunRequest, cancel: Arc<std::sync::at
     // 依赖服务检查：requires 里的服务必须都在 Running
     if !cfg.requires.is_empty() {
         let missing: Vec<String> = {
-            let rts = state.runtimes.lock().unwrap();
+            let rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
             cfg.requires
                 .iter()
                 .filter(|sid| {
@@ -185,7 +185,7 @@ fn execute(state: &Arc<AppState>, req: TaskRunRequest, cancel: Arc<std::sync::at
                 &emitter,
                 &sink,
             );
-            let conn = state.db.lock().unwrap();
+            let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::finish_task_run(
                 &conn,
                 &req.run_id,
@@ -206,7 +206,7 @@ fn execute(state: &Arc<AppState>, req: TaskRunRequest, cancel: Arc<std::sync::at
     all_args.extend(req.extra_args.iter().cloned());
 
     {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::set_task_run_running(
             &conn,
             &req.run_id,
@@ -284,7 +284,7 @@ fn execute(state: &Arc<AppState>, req: TaskRunRequest, cancel: Arc<std::sync::at
                             &emitter,
                             &sink,
                         );
-                        let conn = state.db.lock().unwrap();
+                        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
                         db::finish_task_run(
                             &conn,
                             &req.run_id,
@@ -303,7 +303,7 @@ fn execute(state: &Arc<AppState>, req: TaskRunRequest, cancel: Arc<std::sync::at
                     &emitter,
                     &sink,
                 );
-                let conn = state.db.lock().unwrap();
+                let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::finish_task_run(
                     &conn,
                     &req.run_id,
@@ -414,12 +414,16 @@ fn execute(state: &Arc<AppState>, req: TaskRunRequest, cancel: Arc<std::sync::at
         format!("[task] 结束：{:?} exit={:?}", status, exit_code)
     };
     logs::system_message(&end_note, &req.run_id, &emitter, &sink);
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::finish_task_run(&conn, &req.run_id, status, exit_code, now_ms() / 1000, dur);
 
     // 失败/超时给系统通知，长构建不用盯着屏幕
     if matches!(status, TaskRunStatus::Failed) {
-        let notify = state.notify.lock().unwrap().clone();
+        let notify = state
+            .notify
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         if let Some(notify) = notify {
             let body = if timed_out {
                 format!("{} 超时（{}s）", req.name, cfg.timeout_secs)

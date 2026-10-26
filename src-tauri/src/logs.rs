@@ -362,11 +362,15 @@ mod tests {
         let dir = temp_dir("reopen");
         {
             let sink = LogSink::open(&dir).unwrap();
-            sink.lock().unwrap().write_line(0, "stdout", "first");
+            sink.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .write_line(0, "stdout", "first");
         }
         {
             let sink = LogSink::open(&dir).unwrap();
-            sink.lock().unwrap().write_line(0, "stdout", "second");
+            sink.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .write_line(0, "stdout", "second");
         }
         let content = std::fs::read_to_string(dir.join(format!("{}.log", today()))).unwrap();
         assert!(

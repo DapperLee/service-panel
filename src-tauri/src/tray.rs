@@ -33,7 +33,7 @@ type Snapshot = Vec<(String, String, bool)>;
 
 fn snapshot(state: &Arc<AppState>) -> Snapshot {
     let mut v: Snapshot = {
-        let rts = state.runtimes.lock().unwrap();
+        let rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
         rts.iter()
             .map(|(id, r)| (id.clone(), spec_name(&r.spec), is_on(r.state)))
             .collect()
@@ -88,7 +88,7 @@ pub fn refresh(app: &AppHandle, state: &Arc<AppState>) {
     let snap = snapshot(state);
     let sig = signature(&snap);
     {
-        let mut last = state.tray_sig.lock().unwrap();
+        let mut last = state.tray_sig.lock().unwrap_or_else(|e| e.into_inner());
         if *last == sig {
             return;
         }
@@ -157,7 +157,7 @@ fn handle_menu(app: &AppHandle, state: &Arc<AppState>, id: &str) {
 pub fn install(app: &AppHandle, state: Arc<AppState>) -> tauri::Result<()> {
     let snap = snapshot(&state);
     let menu = build_menu(app, &snap)?;
-    *state.tray_sig.lock().unwrap() = signature(&snap);
+    *state.tray_sig.lock().unwrap_or_else(|e| e.into_inner()) = signature(&snap);
     // 构建期已注入 bundle 图标，default_window_icon 必然存在
     let icon = app
         .default_window_icon()

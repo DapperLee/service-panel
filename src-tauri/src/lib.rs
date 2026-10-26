@@ -150,9 +150,9 @@ pub fn run() {
             {
                 let buf = log_buf.clone();
                 let emitter: logs::LogEmitter = Arc::new(move |ev| {
-                    let _ = buf.lock().unwrap().push(ev);
+                    let _ = buf.lock().unwrap_or_else(|e| e.into_inner()).push(ev);
                 });
-                *state.emitter.lock().unwrap() = Some(emitter);
+                *state.emitter.lock().unwrap_or_else(|e| e.into_inner()) = Some(emitter);
             }
             {
                 let handle = app_handle.clone();
@@ -173,7 +173,7 @@ pub fn run() {
 
             // 状态变化 channel：监督/管理线程发事件 -> 消费者线程 emit 给前端 + 落库 + 刷新托盘
             let (tx, rx) = std::sync::mpsc::channel::<StateEvent>();
-            *state.state_tx.lock().unwrap() = Some(tx);
+            *state.state_tx.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
             {
                 let handle = app_handle.clone();
                 let db = state.db.clone();
@@ -222,7 +222,7 @@ pub fn run() {
 
             // 把 DB 里的服务载入内存注册表
             let views = {
-                let conn = state.db.lock().unwrap();
+                let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::list_services(&conn).unwrap_or_default()
             };
             for v in views {
@@ -231,7 +231,7 @@ pub fn run() {
 
             // 启动清理：过期事件 + 过期运行记录 + 超保留天数的日志目录
             {
-                let conn = state.db.lock().unwrap();
+                let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::prune_events(&conn, 7, 5000);
                 db::prune_task_runs(&conn, 30, 500);
                 // 恢复上次设置的并发数
@@ -258,7 +258,7 @@ pub fn run() {
                             .body(body)
                             .show();
                     });
-                *state.notify.lock().unwrap() = Some(notify);
+                *state.notify.lock().unwrap_or_else(|e| e.into_inner()) = Some(notify);
             }
 
             // 系统托盘常驻

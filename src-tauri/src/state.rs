@@ -193,7 +193,7 @@ impl AppState {
     /// 同一时刻只有一个句柄开着这个日志文件，才能按累计字节切分片。
     /// 返回 None 表示服务不存在，或日志目录创建/文件打开失败。
     pub fn log_sink(&self, id: &str) -> Option<Sink> {
-        let mut rts = self.runtimes.lock().unwrap();
+        let mut rts = self.runtimes.lock().unwrap_or_else(|e| e.into_inner());
         let rt = rts.get_mut(id)?;
         if rt.sink.is_none() {
             rt.sink = crate::logs::LogSink::open(&self.log_dir(id)).ok();
@@ -202,11 +202,19 @@ impl AppState {
     }
 
     pub fn current_emitter(&self) -> Option<LogEmitter> {
-        self.emitter.lock().unwrap().clone()
+        self.emitter
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn push_state(&self, ev: StateEvent) {
-        if let Some(tx) = self.state_tx.lock().unwrap().as_ref() {
+        if let Some(tx) = self
+            .state_tx
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
             let _ = tx.send(ev);
         }
     }
