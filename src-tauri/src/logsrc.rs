@@ -180,6 +180,9 @@ fn start_file_tail(state: &Arc<AppState>, id: &str, spec: &crate::types::Service
     let handle = std::thread::spawn(move || {
         let mut offset: u64 = 0;
         let mut primed = false;
+        // 跨轮缓冲：已读进内存但还没遇到换行的"半行"字节，留到下一轮拼完整再 emit，
+        // 避免把一行拆成两条、或从多字节中间切断产生乱码。
+        let mut pending: Vec<u8> = Vec::new();
         loop {
             // 收到 detach 的信号、或 Sender 被丢弃，都立即退出
             match rx.recv_timeout(TAIL_POLL) {
@@ -199,6 +202,7 @@ fn start_file_tail(state: &Arc<AppState>, id: &str, spec: &crate::types::Service
             }
             if size < offset {
                 offset = 0; // 轮转/截断
+                pending.clear();
             }
             if size <= offset {
                 continue; // 无新增内容
@@ -209,18 +213,31 @@ fn start_file_tail(state: &Arc<AppState>, id: &str, spec: &crate::types::Service
             if f.seek(SeekFrom::Start(offset)).is_err() {
                 continue;
             }
-            let mut buf = Vec::new();
-            if f.read_to_end(&mut buf).is_err() {
+            let mut fresh = Vec::new();
+            if f.read_to_end(&mut fresh).is_err() {
                 continue;
             }
-            // 按**实际读到的字节数**推进偏移。旧代码写的是 `offset = size`，而 size
-            // 是先前 metadata 取到的值：读取期间文件又涨了的话，下一轮会从 size 重新
-            // seek，把上一轮已经读过的尾部再读一遍，表现为重复日志行。
-            offset += buf.len() as u64;
+            // 已把 offset..size 的字节读进内存，offset 推进到 size；未成行的尾部放 pending。
+            offset = size;
 
-            let mut lines: Vec<&[u8]> = buf.split(|&b| b == b'\n').collect();
+            let mut combined = std::mem::take(&mut pending);
+            combined.extend_from_slice(&fresh);
+
+            // 只处理到最后一个换行为止的完整行，尾部残段留到下一轮
+            let last_nl = match combined.iter().rposition(|&b| b == b'\n') {
+                Some(i) => i,
+                None => {
+                    pending = combined; // 连一个完整行都没有，全部留待下轮
+                    continue;
+                }
+            };
+            let tail = combined[last_nl + 1..].to_vec();
+            pending = tail;
+            let complete = &combined[..=last_nl];
+
+            let mut lines: Vec<&[u8]> = complete.split(|&b| b == b'\n').collect();
             if drop_partial && !lines.is_empty() {
-                // 丢掉从 64KB 边界切进来的半行
+                // 丢掉从 64KB 边界切进来的开头半行
                 lines.remove(0);
             }
             for line in lines {

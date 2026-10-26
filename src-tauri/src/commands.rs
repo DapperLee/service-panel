@@ -464,8 +464,14 @@ pub fn read_task_log(
         };
         let ts: i64 = line[..sp].parse().unwrap_or(0);
         let rest = &line[sp + 1..];
+        // 落盘行可能因进程被强杀而在中途截断，切片一律用 get 防越界 panic
         let (stream, text) = match (rest.strip_prefix('['), rest.find(']')) {
-            (Some(_), Some(end)) => (&rest[1..end], rest[end + 2..].to_string()),
+            (Some(_), Some(end)) if end >= 1 => {
+                let stream = rest.get(1..end).unwrap_or("stdout");
+                // "]" 之后应有一个空格再接正文
+                let text = rest.get(end + 2..).unwrap_or("").to_string();
+                (stream, text)
+            }
             _ => ("stdout", rest.to_string()),
         };
         out.push(crate::types::LogLine {

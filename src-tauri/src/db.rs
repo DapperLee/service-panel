@@ -691,7 +691,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 2, "迁移后 user_version 应推进到 2");
+        assert_eq!(version, 4, "迁移后 user_version 应推进到 4");
 
         let cols: Vec<String> = conn
             .prepare("PRAGMA table_info(groups)")

@@ -35,11 +35,19 @@ pub fn ensure_runtime(state: &Arc<AppState>, id: &str, spec: ServiceSpec, config
     let mut rts = state.runtimes.lock().unwrap();
     match rts.get_mut(id) {
         Some(rt) => {
-            // 已存在则刷新 spec/config_ok（编辑配置后）
+            // 已存在则刷新 config_ok 与模板。运行中的服务**不覆盖活动 spec**
+            // （保留已解析的端口/健康目标），新配置到下次重启才生效，避免编辑
+            // 把正在跑的自动端口服务打回 {port} 导致健康检查失效。
             let was_broken = !rt.config_ok;
             let stale_err = rt.last_error.as_deref() == Some(crate::db::CONFIG_BROKEN_MSG);
-            rt.spec = spec.clone();
-            rt.spec_template = spec;
+            let running = matches!(
+                rt.state,
+                State::Running | State::Starting | State::Restarting | State::Unhealthy
+            );
+            rt.spec_template = spec.clone();
+            if !running {
+                rt.spec = spec;
+            }
             rt.config_ok = config_ok;
             if config_ok {
                 if was_broken && stale_err {
@@ -180,6 +188,19 @@ fn start_impl(state: &Arc<AppState>, id: &str) -> Result<(), String> {
 
     set_desired(state, id, Desired::Running);
     set_state(state, id, State::Starting, None);
+
+    // 若该服务仍持有存活的托管/接管进程（如 Unhealthy 但进程没退、或重复点启动），
+    // 先回收再启动，避免双起两个实例抢端口。command_stop 是内部函数，不重入 op 锁。
+    let had_live = state
+        .runtimes
+        .lock()
+        .unwrap()
+        .get(id)
+        .map(|r| r.live.is_some() || r.adopted.is_some())
+        .unwrap_or(false);
+    if had_live && spec.driver == DriverKind::Command {
+        command_stop(state, id, spec.stop_timeout_secs);
+    }
 
     let result = match spec.driver {
         DriverKind::Command => {

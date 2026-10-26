@@ -160,7 +160,8 @@ pub fn run() {
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_millis(80));
                     let batch = {
-                        let mut q = buf.lock().unwrap();
+                        // 容错锁：别的线程 panic 投毒也不能让这个日志 flusher 死掉
+                        let mut q = buf.lock().unwrap_or_else(|e| e.into_inner());
                         if q.is_empty() {
                             continue;
                         }
@@ -180,35 +181,41 @@ pub fn run() {
                 let mut count = 0u32;
                 std::thread::spawn(move || {
                     for ev in rx {
-                        {
-                            let conn = db.lock().unwrap();
-                            db::record_event(
-                                &conn,
-                                &ev.id,
-                                ev.from
-                                    .map(|s| format!("{:?}", s).to_lowercase())
-                                    .as_deref(),
-                                &format!("{:?}", ev.state).to_lowercase(),
-                                ev.error.as_deref(),
-                                ev.exit_code,
-                            );
-                        }
-                        // 每 500 条事件顺带做一次过期清理，防 flapping 撑爆
-                        count += 1;
-                        if count % 500 == 0 {
-                            let conn = db.lock().unwrap();
-                            db::prune_events(&conn, 7, 5000);
-                        }
-                        let payload = serde_json::json!({
-                            "id": ev.id,
-                            "from": ev.from.map(|s| format!("{:?}", s).to_lowercase()),
-                            "state": ev.state,
-                            "pid": ev.pid,
-                            "error": ev.error,
-                        });
-                        let _ = handle.emit("state://change", &payload);
-                        // 状态变化同步刷新托盘菜单的服务启停点
-                        tray::refresh(&handle, &tray_state);
+                        // 单个事件处理 panic 不能杀死这条常驻线程（否则状态/事件/托盘全哑）
+                        let db = db.clone();
+                        let handle = handle.clone();
+                        let tray_state = tray_state.clone();
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            {
+                                let conn = db.lock().unwrap_or_else(|e| e.into_inner());
+                                db::record_event(
+                                    &conn,
+                                    &ev.id,
+                                    ev.from
+                                        .map(|s| format!("{:?}", s).to_lowercase())
+                                        .as_deref(),
+                                    &format!("{:?}", ev.state).to_lowercase(),
+                                    ev.error.as_deref(),
+                                    ev.exit_code,
+                                );
+                            }
+                            // 每 500 条事件顺带做一次过期清理，防 flapping 撑爆
+                            count += 1;
+                            if count % 500 == 0 {
+                                let conn = db.lock().unwrap_or_else(|e| e.into_inner());
+                                db::prune_events(&conn, 7, 5000);
+                            }
+                            let payload = serde_json::json!({
+                                "id": ev.id,
+                                "from": ev.from.map(|s| format!("{:?}", s).to_lowercase()),
+                                "state": ev.state,
+                                "pid": ev.pid,
+                                "error": ev.error,
+                            });
+                            let _ = handle.emit("state://change", &payload);
+                            // 状态变化同步刷新托盘菜单的服务启停点
+                            tray::refresh(&handle, &tray_state);
+                        }));
                     }
                 });
             }

@@ -34,11 +34,35 @@ fn shell_flag() -> &'static str {
     "-c"
 }
 
+/// 容错加锁：即使 Mutex 被别的线程 panic 投毒，也取回内部数据继续用，
+/// 避免"一处 panic -> 全应用锁级联 panic"。
+fn plock<'a, T>(m: &'a std::sync::Mutex<T>) -> std::sync::MutexGuard<'a, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// 运行槽守卫：Drop 时归还并发槽 + 清理 active/cancel_flags。
+/// 用 RAII 保证即使 execute panic 或后续锁出错，槽位也一定释放，队列不会永久卡死。
+struct SlotGuard {
+    state: Arc<AppState>,
+    slots: Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>,
+    rid: String,
+}
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        plock(&self.state.task_active).remove(&self.rid);
+        plock(&self.state.task_cancel_flags).remove(&self.rid);
+        let (m, cv) = &*self.slots;
+        let mut g = plock(m);
+        *g = g.saturating_sub(1);
+        cv.notify_all();
+    }
+}
+
 /// 启动任务队列 worker：可配并发数（task_max_parallel，1=串行）。
 /// 调度线程从 channel 取请求，占一个并发槽后 spawn 一个运行线程；槽满则等待。
 pub fn spawn_worker(state: Arc<AppState>) {
     let (tx, rx) = std::sync::mpsc::channel::<TaskRunRequest>();
-    *state.task_tx.lock().unwrap() = Some(tx);
+    *plock(&state.task_tx) = Some(tx);
     std::thread::spawn(move || {
         // 计数信号量：活跃运行数 + 条件变量
         let slots = Arc::new((std::sync::Mutex::new(0usize), std::sync::Condvar::new()));
@@ -47,49 +71,44 @@ pub fn spawn_worker(state: Arc<AppState>) {
             // 等待空闲槽（每次重新读 max_parallel，支持运行时调大/调小）
             {
                 let (m, cv) = &*slots;
-                let mut g = m.lock().unwrap();
+                let mut g = plock(m);
                 loop {
                     let max = state.task_max_parallel.load(Ordering::SeqCst).max(1);
                     if *g < max {
                         *g += 1;
                         break;
                     }
-                    g = cv.wait(g).unwrap();
+                    g = cv.wait(g).unwrap_or_else(|e| e.into_inner());
                 }
             }
 
             let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            state
-                .task_cancel_flags
-                .lock()
-                .unwrap()
-                .insert(run_id.clone(), cancel.clone());
-            state.task_active.lock().unwrap().insert(run_id.clone());
+            plock(&state.task_cancel_flags).insert(run_id.clone(), cancel.clone());
+            plock(&state.task_active).insert(run_id.clone());
 
             let st = state.clone();
-            let slots2 = slots.clone();
-            let rid = run_id.clone();
+            let guard = SlotGuard {
+                state: state.clone(),
+                slots: slots.clone(),
+                rid: run_id.clone(),
+            };
             std::thread::spawn(move || {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     execute(&st, req, cancel)
                 }));
                 if res.is_err() {
-                    let conn = st.db.lock().unwrap();
+                    let conn = plock(&st.db);
                     db::finish_task_run(
                         &conn,
-                        &rid,
+                        &guard.rid,
                         TaskRunStatus::Failed,
                         None,
                         now_ms() / 1000,
                         0,
                     );
                 }
-                st.task_active.lock().unwrap().remove(&rid);
-                st.task_cancel_flags.lock().unwrap().remove(&rid);
-                let (m, cv) = &*slots2;
-                let mut g = m.lock().unwrap();
-                *g = g.saturating_sub(1);
-                cv.notify_all();
+                // 无论成功/失败/panic，drop(guard) 都归还槽位并清理
+                drop(guard);
             });
         }
     });

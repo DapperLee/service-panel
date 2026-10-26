@@ -109,12 +109,19 @@ fn toggle_service(app: &AppHandle, state: &Arc<AppState>, sid: &str) {
         .get(sid)
         .map(|r| r.state == State::Running)
         .unwrap_or(false);
-    if running {
-        let _ = manager::stop(state, sid);
-    } else {
-        let _ = manager::start(state, sid);
-    }
-    refresh(app, state);
+    // 启停可能阻塞很久（Windows 服务停止轮询最长 30s+），不能在托盘菜单事件线程上同步跑，
+    // 否则整个托盘/事件循环被冻结。丢到后台线程，完成后再刷新菜单。
+    let st = state.clone();
+    let app2 = app.clone();
+    let sid = sid.to_string();
+    std::thread::spawn(move || {
+        if running {
+            let _ = manager::stop(&st, &sid);
+        } else {
+            let _ = manager::start(&st, &sid);
+        }
+        refresh(&app2, &st);
+    });
 }
 
 fn handle_menu(app: &AppHandle, state: &Arc<AppState>, id: &str) {

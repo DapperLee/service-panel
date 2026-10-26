@@ -265,9 +265,9 @@ fn tick(state: &Arc<AppState>, sys: &System) {
             }
 
             // 4) 采集健康探测任务（阻塞 I/O，锁外并行做）
-            //    排期按 spec 里的「间隔(秒)」，不是每 tick：以前后端从不读这个字段，
-            //    填 10 秒也照样 2 秒探一次，command 型探测等于每 2 秒起一个子进程。
-            if rt.state == State::Running
+            //    Running 和 Unhealthy 都探测：Unhealthy 需要继续探测以便恢复回 Running，
+            //    否则一旦进入 Unhealthy 就再也不探、永远无法自愈。
+            if matches!(rt.state, State::Running | State::Unhealthy)
                 && rt.spec.healthcheck.kind != crate::types::HealthKind::None
                 && now >= rt.next_health_at
             {
@@ -363,15 +363,30 @@ fn tick(state: &Arc<AppState>, sys: &System) {
                 rt.ext_metrics = alive.then_some(st.metrics).flatten();
             }
 
-            // 健康检查结果（仅对仍是 Running 的服务应用，避免探测期间被停止后误判）
-            if rt.state == State::Running {
+            // 健康检查结果（Running 或 Unhealthy 都应用；Unhealthy 恢复则回到 Running）
+            if matches!(rt.state, State::Running | State::Unhealthy) {
                 if let Some(res) = health_map.get(id) {
                     let threshold = rt.spec.healthcheck.unhealthy_threshold;
                     match res {
-                        Ok(()) => rt.unhealthy_streak = 0,
+                        Ok(()) => {
+                            rt.unhealthy_streak = 0;
+                            if rt.state == State::Unhealthy {
+                                let prev = rt.state;
+                                rt.state = State::Running;
+                                rt.next_attempt_at = 0; // 撤销可能排上的重启
+                                events.push(StateEvent {
+                                    id: id.clone(),
+                                    from: Some(prev),
+                                    state: State::Running,
+                                    pid: rt.observed_pid(),
+                                    error: None,
+                                    exit_code: None,
+                                });
+                            }
+                        }
                         Err(_) => {
                             rt.unhealthy_streak += 1;
-                            if rt.unhealthy_streak >= threshold {
+                            if rt.unhealthy_streak >= threshold && rt.state != State::Unhealthy {
                                 let prev = rt.state;
                                 rt.state = State::Unhealthy;
                                 events.push(StateEvent {
@@ -391,8 +406,8 @@ fn tick(state: &Arc<AppState>, sys: &System) {
                 }
             }
 
-            // 到达退避时间 -> 执行重启
-            if matches!(rt.state, State::Crashed | State::Restarting)
+            // 到达退避时间 -> 执行重启（含 Unhealthy：健康检查失败触发的自愈）
+            if matches!(rt.state, State::Crashed | State::Restarting | State::Unhealthy)
                 && rt.desired == Desired::Running
                 && rt.next_attempt_at != 0
                 && now >= rt.next_attempt_at

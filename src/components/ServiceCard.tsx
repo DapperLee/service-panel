@@ -48,6 +48,10 @@ export default function ServiceCard({
   const target = async (fn: () => Promise<unknown>) => {
     try {
       await fn();
+    } catch (e) {
+      // 后端拒绝操作（坏配置/占用等）时不再抛未处理拒绝；错误详情由后端
+      // 通过状态事件写进 svc.lastError，onChanged 刷新后显示在卡片上。
+      console.error(e);
     } finally {
       onChanged();
     }

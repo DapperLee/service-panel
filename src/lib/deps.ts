@@ -63,9 +63,46 @@ export function buildGraph(services: ServiceView[]): Graph {
     }
   }
 
-  const cycleIds = new Set(
-    services.map((s) => s.id).filter((id) => !visited.has(id))
-  );
+  // 精确环检测：Tarjan 求强连通分量，只有 size>1 的 SCC 才是真环。
+  // （Kahn 未访问到的节点里，既有环成员，也有"依赖了环"的无辜下游节点，不能一律标红。）
+  const adj = new Map<string, string[]>();
+  for (const s of services) adj.set(s.id, []);
+  for (const e of edges) adj.get(e.from)?.push(e.to);
+
+  const cycleIds = new Set<string>();
+  {
+    let index = 0;
+    const idx = new Map<string, number>();
+    const low = new Map<string, number>();
+    const onStack = new Set<string>();
+    const stack: string[] = [];
+    const strongconnect = (v: string) => {
+      idx.set(v, index);
+      low.set(v, index);
+      index++;
+      stack.push(v);
+      onStack.add(v);
+      for (const w of adj.get(v) ?? []) {
+        if (!idx.has(w)) {
+          strongconnect(w);
+          low.set(v, Math.min(low.get(v)!, low.get(w)!));
+        } else if (onStack.has(w)) {
+          low.set(v, Math.min(low.get(v)!, idx.get(w)!));
+        }
+      }
+      if (low.get(v) === idx.get(v)) {
+        const comp: string[] = [];
+        let w: string;
+        do {
+          w = stack.pop()!;
+          onStack.delete(w);
+          comp.push(w);
+        } while (w !== v);
+        if (comp.length > 1) for (const n of comp) cycleIds.add(n);
+      }
+    };
+    for (const s of services) if (!idx.has(s.id)) strongconnect(s.id);
+  }
 
   const nodes: GraphNode[] = services.map((s) => ({
     id: s.id,

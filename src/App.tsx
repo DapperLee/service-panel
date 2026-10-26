@@ -12,6 +12,8 @@ import TasksView from "./components/TasksView";
 
 // 每个服务在内存里保留的日志行数上限（与 LogConsole 的显示上限一致）
 const MAX_LOG_LINES = 2000;
+// 同时保留日志的服务/运行 id 上限（LRU 淘汰最久未触及的，防内存无限增长）
+const MAX_LOG_KEYS = 80;
 
 export default function App() {
   const [services, setServices] = useState<ServiceView[]>([]);
@@ -74,10 +76,17 @@ export default function App() {
         const next = { ...prev };
         for (const [id, lines] of Object.entries(grouped)) {
           const merged = [...(next[id] ?? []), ...lines];
+          // delete + 重设，让被触及的 key 移到插入序末尾（LRU）
+          delete next[id];
           next[id] =
             merged.length > MAX_LOG_LINES
               ? merged.slice(merged.length - MAX_LOG_LINES)
               : merged;
+        }
+        // key 总数上限：超出就从最久未触及的前端删起，防止长期开面板内存无限增长
+        const keys = Object.keys(next);
+        if (keys.length > MAX_LOG_KEYS) {
+          for (const k of keys.slice(0, keys.length - MAX_LOG_KEYS)) delete next[k];
         }
         return next;
       });
@@ -138,6 +147,9 @@ export default function App() {
     try {
       await fn();
       await refresh();
+    } catch (e) {
+      setToast(String(e));
+      setTimeout(() => setToast(null), 4000);
     } finally {
       setBusy(false);
     }
@@ -303,7 +315,13 @@ export default function App() {
           serviceId={selectedId}
           serviceName={selected?.name ?? null}
           logs={logs}
-          onClear={(id) => setLogs((p) => ({ ...p, [id]: [] }))}
+          onClear={(id) =>
+            setLogs((p) => {
+              const n = { ...p };
+              delete n[id];
+              return n;
+            })
+          }
         />
       </div>
         </>
@@ -313,7 +331,13 @@ export default function App() {
         <TasksView
           services={services}
           logs={logs}
-          onClearLog={(id) => setLogs((p) => ({ ...p, [id]: [] }))}
+          onClearLog={(id) =>
+            setLogs((p) => {
+              const n = { ...p };
+              delete n[id];
+              return n;
+            })
+          }
           onInjectLog={(id, lines) =>
             setLogs((p) => (p[id] && p[id].length > 0 ? p : { ...p, [id]: lines }))
           }
