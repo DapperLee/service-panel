@@ -6,6 +6,9 @@ use std::process::Child;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
+/// 系统通知回调类型（title, body）
+pub type NotifyFn = Arc<dyn Fn(String, String) + Send + Sync>;
+
 /// 一个正在被面板托管的进程（当前只有 Command 驱动需要）
 pub struct LiveProc {
     pub child: Child,
@@ -119,11 +122,7 @@ impl Runtime {
     pub fn observed_pid(&self) -> Option<u32> {
         match &self.live {
             Some(l) => Some(l.pid),
-            None => self
-                .adopted
-                .as_ref()
-                .map(|a| a.pid)
-                .or(self.ext_pid),
+            None => self.adopted.as_ref().map(|a| a.pid).or(self.ext_pid),
         }
     }
 }
@@ -158,14 +157,13 @@ pub struct AppState {
     /// 任务队列的发送端（setup 里注入）
     pub task_tx: Arc<Mutex<Option<Sender<crate::types::TaskRunRequest>>>>,
     /// 每个正在运行任务的取消标志（run_id -> flag），支持并行下按运行精确取消
-    pub task_cancel_flags:
-        Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
+    pub task_cancel_flags: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
     /// 当前正在运行的任务 run id 集合（供 UI 显示"运行中 N"）
     pub task_active: Arc<Mutex<std::collections::HashSet<String>>>,
     /// 最大并发运行数（1 = 串行；可调大做并行）。会话级设置，重启回默认。
     pub task_max_parallel: Arc<std::sync::atomic::AtomicUsize>,
     /// 系统通知回调（title, body），setup 里注入
-    pub notify: Arc<Mutex<Option<Arc<dyn Fn(String, String) + Send + Sync>>>>,
+    pub notify: Arc<Mutex<Option<NotifyFn>>>,
 }
 
 impl AppState {

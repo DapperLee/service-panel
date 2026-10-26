@@ -27,9 +27,7 @@ pub fn spawn_supervisor(state: Arc<AppState>) {
             sys.refresh_processes();
             // 单轮 tick 若 panic，记录后继续，绝不让监督线程死掉导致服务失去监控
             let st = state.clone();
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                tick(&st, &sys)
-            }));
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tick(&st, &sys)));
             thread::sleep(Duration::from_secs(2));
         }
     });
@@ -407,8 +405,10 @@ fn tick(state: &Arc<AppState>, sys: &System) {
             }
 
             // 到达退避时间 -> 执行重启（含 Unhealthy：健康检查失败触发的自愈）
-            if matches!(rt.state, State::Crashed | State::Restarting | State::Unhealthy)
-                && rt.desired == Desired::Running
+            if matches!(
+                rt.state,
+                State::Crashed | State::Restarting | State::Unhealthy
+            ) && rt.desired == Desired::Running
                 && rt.next_attempt_at != 0
                 && now >= rt.next_attempt_at
             {

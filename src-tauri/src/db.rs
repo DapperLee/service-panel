@@ -476,10 +476,7 @@ pub fn delete_task(conn: &Connection, id: &str) -> rusqlite::Result<()> {
 }
 
 /// 插入一条 queued 运行记录
-pub fn insert_task_run(
-    conn: &Connection,
-    run: &crate::types::TaskRun,
-) -> rusqlite::Result<()> {
+pub fn insert_task_run(conn: &Connection, run: &crate::types::TaskRun) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO task_runs (id, task_id, task_name, variant, variant_index, extra_args, status, exit_code, started_at, finished_at, duration_ms, log_path)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
@@ -605,7 +602,12 @@ pub fn list_bookmarks(conn: &Connection) -> rusqlite::Result<Vec<crate::types::B
     rows.collect()
 }
 
-pub fn insert_bookmark(conn: &Connection, id: &str, name: &str, path: &str) -> rusqlite::Result<()> {
+pub fn insert_bookmark(
+    conn: &Connection,
+    id: &str,
+    name: &str,
+    path: &str,
+) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO bookmarks (id, name, path) VALUES (?1,?2,?3)",
         params![id, name, path],
@@ -713,7 +715,10 @@ mod tests {
         assert_eq!(services.len(), 2);
         let enc = services.iter().find(|s| s.id == "s1").unwrap();
         assert!(enc.config_ok, "加密的老 spec 应能被新版解密");
-        assert_eq!(enc.spec.env.get("TOKEN").map(|s| s.as_str()), Some("v1-secret"));
+        assert_eq!(
+            enc.spec.env.get("TOKEN").map(|s| s.as_str()),
+            Some("v1-secret")
+        );
         let plain = services.iter().find(|s| s.id == "s2").unwrap();
         assert!(plain.config_ok, "明文老记录也要能读，不能被判成配置损坏");
         assert_eq!(plain.spec.command, "node");

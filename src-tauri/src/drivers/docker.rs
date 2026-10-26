@@ -27,7 +27,9 @@ pub fn engine_up() -> bool {
 
 pub fn start(container: &str) -> Result<(), String> {
     if !engine_up() {
-        return Err("Docker 引擎未运行，请先启动 Docker Desktop 并等待其就绪后再启动容器".to_string());
+        return Err(
+            "Docker 引擎未运行，请先启动 Docker Desktop 并等待其就绪后再启动容器".to_string(),
+        );
     }
     run(&["start", container]).map(|_| ())
 }
@@ -43,7 +45,12 @@ pub fn stop(container: &str) -> Result<(), String> {
 /// 一次 inspect 同时拿运行状态与进程号（拆成两次就白起一个 docker 子进程）
 fn inspect_state(container: &str) -> Option<(bool, u32)> {
     let mut cmd = Command::new("docker");
-    cmd.args(["inspect", "-f", "{{.State.Running}} {{.State.Pid}}", container]);
+    cmd.args([
+        "inspect",
+        "-f",
+        "{{.State.Running}} {{.State.Pid}}",
+        container,
+    ]);
     crate::drivers::command::hide_window(&mut cmd);
     let out = cmd.output().ok()?;
     if !out.status.success() {

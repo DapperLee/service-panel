@@ -228,7 +228,12 @@ fn run_start(app: &AppHandle, state: &Arc<AppState>, ordered: &[String], group: 
         if err.is_none() {
             // 用启动后 Runtime 里的实时 spec（自动端口已把 {port} 解析进健康目标），
             // 而不是链开始时那份未解析的快照。
-            let live_spec = state.runtimes.lock().unwrap().get(id).map(|r| r.spec.clone());
+            let live_spec = state
+                .runtimes
+                .lock()
+                .unwrap()
+                .get(id)
+                .map(|r| r.spec.clone());
             if let Some(spec) = live_spec {
                 if let Err(e) = wait_ready(state, id, &spec) {
                     err = Some(e);
@@ -251,7 +256,7 @@ fn run_start(app: &AppHandle, state: &Arc<AppState>, ordered: &[String], group: 
         }
         if !skipped.is_empty() {
             if !msg.is_empty() {
-                msg.push_str("；");
+                msg.push('；');
             }
             msg.push_str(&format!(
                 "因依赖未就绪跳过 {} 个：{}",
@@ -282,7 +287,11 @@ fn run_stop(app: &AppHandle, state: &Arc<AppState>, ordered: &[String], group: &
             app,
             group,
             "stop",
-            Err(format!("停止失败 {} 个：{}", failed.len(), failed.join("、"))),
+            Err(format!(
+                "停止失败 {} 个：{}",
+                failed.len(),
+                failed.join("、")
+            )),
         );
     }
 }

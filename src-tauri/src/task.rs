@@ -171,7 +171,9 @@ fn execute(state: &Arc<AppState>, req: TaskRunRequest, cancel: Arc<std::sync::at
             cfg.requires
                 .iter()
                 .filter(|sid| {
-                    rts.get(*sid).map(|r| r.state != State::Running).unwrap_or(true)
+                    rts.get(*sid)
+                        .map(|r| r.state != State::Running)
+                        .unwrap_or(true)
                 })
                 .cloned()
                 .collect()
@@ -205,7 +207,12 @@ fn execute(state: &Arc<AppState>, req: TaskRunRequest, cancel: Arc<std::sync::at
 
     {
         let conn = state.db.lock().unwrap();
-        db::set_task_run_running(&conn, &req.run_id, now_ms() / 1000, &run_dir.to_string_lossy());
+        db::set_task_run_running(
+            &conn,
+            &req.run_id,
+            now_ms() / 1000,
+            &run_dir.to_string_lossy(),
+        );
     }
     logs::system_message(
         &format!("[task] 运行：{} {}", command, all_args.join(" ")),

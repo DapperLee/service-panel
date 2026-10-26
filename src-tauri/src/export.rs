@@ -222,8 +222,16 @@ mod tests {
         {
             let conn = src.db.lock().unwrap();
             db::create_group(&conn, "g1", "分组一").unwrap();
-            db::insert_service(&conn, "s1", "服务一", Some("g1"), 1, true, &spec_with_token("abc-123"))
-                .unwrap();
+            db::insert_service(
+                &conn,
+                "s1",
+                "服务一",
+                Some("g1"),
+                1,
+                true,
+                &spec_with_token("abc-123"),
+            )
+            .unwrap();
             db::insert_service(
                 &conn,
                 "s2",
@@ -242,7 +250,10 @@ mod tests {
 
         // 按设计导出文件是明文 JSON（文件头注释承诺的）；哪天改成加密导出，这条会逼着同步改文档
         let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(raw.contains("abc-123"), "导出文件应为可读明文，便于人工核对备份内容");
+        assert!(
+            raw.contains("abc-123"),
+            "导出文件应为可读明文，便于人工核对备份内容"
+        );
 
         let (dst, dst_dir) = state();
         let out = import_from_file(&dst, path.to_str().unwrap(), false).unwrap();
@@ -257,7 +268,10 @@ mod tests {
         };
         assert_eq!(back.len(), 2);
         let s1 = back.iter().find(|s| s.id == "s1").unwrap();
-        assert_eq!(s1.spec.env.get("TOKEN").map(|s| s.as_str()), Some("abc-123"));
+        assert_eq!(
+            s1.spec.env.get("TOKEN").map(|s| s.as_str()),
+            Some("abc-123")
+        );
         assert_eq!(s1.group_id.as_deref(), Some("g1"), "分组归属要跟着回来");
         assert!(s1.enabled, "enabled 不能在 round-trip 里翻转");
         let s2 = back.iter().find(|s| s.id == "s2").unwrap();
@@ -269,7 +283,11 @@ mod tests {
         // 同一份文件再导入一次：merge 的语义是跳过已有 id，既不重复也不覆盖
         let again = import_from_file(&dst, path.to_str().unwrap(), false).unwrap();
         assert_eq!(
-            (again.services_added, again.services_skipped, again.groups_added),
+            (
+                again.services_added,
+                again.services_skipped,
+                again.groups_added
+            ),
             (0, 2, 0)
         );
 
@@ -287,7 +305,16 @@ mod tests {
         let (src, src_dir) = state();
         {
             let conn = src.db.lock().unwrap();
-            db::insert_service(&conn, "ok", "正常服务", None, 1, false, &spec_with_token("x")).unwrap();
+            db::insert_service(
+                &conn,
+                "ok",
+                "正常服务",
+                None,
+                1,
+                false,
+                &spec_with_token("x"),
+            )
+            .unwrap();
             conn.execute(
                 "INSERT INTO services (id, name, sort_order, enabled, spec_json, created_at, updated_at)
                  VALUES ('bad','坏配置服务',2,0,'{ 这不是 JSON',1,1)",
@@ -298,7 +325,10 @@ mod tests {
 
         let path = std::env::temp_dir().join(format!("sp-export-{}.json", uuid::Uuid::new_v4()));
         let err = export_to_file(&src, path.to_str().unwrap()).unwrap_err();
-        assert!(err.contains("坏配置服务"), "报错要点出是哪个服务坏了：{err}");
+        assert!(
+            err.contains("坏配置服务"),
+            "报错要点出是哪个服务坏了：{err}"
+        );
         assert!(!path.exists(), "中止导出不能留下半截备份文件");
 
         drop(src);

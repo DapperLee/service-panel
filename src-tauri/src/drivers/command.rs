@@ -28,7 +28,9 @@ pub fn hide_window(cmd: &mut Command) {
 #[cfg(unix)]
 pub fn kill_group(pid: u32, force: bool) {
     let sig = if force { "-KILL" } else { "-TERM" };
-    let _ = Command::new("kill").args([sig, &format!("-{pid}")]).status();
+    let _ = Command::new("kill")
+        .args([sig, &format!("-{pid}")])
+        .status();
 }
 
 /// 已启动的托管进程

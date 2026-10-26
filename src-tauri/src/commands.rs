@@ -281,17 +281,28 @@ pub fn quit_app(app: tauri::AppHandle) {
 // ============================ 任务 ============================
 
 #[tauri::command]
-pub fn list_tasks(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<crate::types::TaskView>, String> {
+pub fn list_tasks(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<crate::types::TaskView>, String> {
     let conn = state.db.lock().unwrap();
     db::list_tasks(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn add_task(state: tauri::State<'_, Arc<AppState>>, input: TaskInput) -> Result<String, String> {
+pub fn add_task(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: TaskInput,
+) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
     let conn = state.db.lock().unwrap();
-    db::insert_task(&conn, &id, &input.name, input.group.as_deref(), &input.config)
-        .map_err(|e| e.to_string())?;
+    db::insert_task(
+        &conn,
+        &id,
+        &input.name,
+        input.group.as_deref(),
+        &input.config,
+    )
+    .map_err(|e| e.to_string())?;
     Ok(id)
 }
 
@@ -299,8 +310,14 @@ pub fn add_task(state: tauri::State<'_, Arc<AppState>>, input: TaskInput) -> Res
 pub fn update_task(state: tauri::State<'_, Arc<AppState>>, input: TaskInput) -> Result<(), String> {
     let id = input.id.clone().ok_or("缺少 id")?;
     let conn = state.db.lock().unwrap();
-    db::update_task(&conn, &id, &input.name, input.group.as_deref(), &input.config)
-        .map_err(|e| e.to_string())?;
+    db::update_task(
+        &conn,
+        &id,
+        &input.name,
+        input.group.as_deref(),
+        &input.config,
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -379,7 +396,10 @@ pub fn run_task(
 /// 取消任务运行：运行中 -> 置取消标志（调度器 kill 进程树）；排队中 -> 标记为已取消，
 /// 调度器 pop 到它会跳过。
 #[tauri::command]
-pub fn cancel_task_run(state: tauri::State<'_, Arc<AppState>>, run_id: String) -> Result<(), String> {
+pub fn cancel_task_run(
+    state: tauri::State<'_, Arc<AppState>>,
+    run_id: String,
+) -> Result<(), String> {
     let flag = state
         .task_cancel_flags
         .lock()
@@ -411,7 +431,9 @@ pub fn cancel_task_run(state: tauri::State<'_, Arc<AppState>>, run_id: String) -
 /// 任务最大并发数（1=串行）
 #[tauri::command]
 pub fn get_task_max_parallel(state: tauri::State<'_, Arc<AppState>>) -> usize {
-    state.task_max_parallel.load(std::sync::atomic::Ordering::SeqCst)
+    state
+        .task_max_parallel
+        .load(std::sync::atomic::Ordering::SeqCst)
 }
 
 #[tauri::command]
@@ -450,7 +472,12 @@ pub fn read_task_log(
         .map_err(|e| format!("读日志目录失败: {e}"))?
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.file_name().and_then(|s| s.to_str()).map(|n| n.contains(".log")).unwrap_or(false))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .map(|n| n.contains(".log"))
+                .unwrap_or(false)
+        })
         .collect();
     files.sort();
     let latest = files.last().ok_or("无日志文件".to_string())?;
@@ -523,9 +550,7 @@ pub fn open_in_terminal(path: String) -> Result<(), String> {
     #[cfg(windows)]
     {
         // 优先 Windows Terminal，回退 cmd
-        let wt = std::process::Command::new("wt")
-            .args(["-d", &path])
-            .spawn();
+        let wt = std::process::Command::new("wt").args(["-d", &path]).spawn();
         if wt.is_ok() {
             return Ok(());
         }
@@ -558,7 +583,9 @@ pub fn open_in_terminal(path: String) -> Result<(), String> {
 // ============================ 书签 ============================
 
 #[tauri::command]
-pub fn list_bookmarks(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<crate::types::Bookmark>, String> {
+pub fn list_bookmarks(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<crate::types::Bookmark>, String> {
     let conn = state.db.lock().unwrap();
     db::list_bookmarks(&conn).map_err(|e| e.to_string())
 }

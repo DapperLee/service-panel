@@ -171,7 +171,12 @@ fn start_impl(state: &Arc<AppState>, id: &str) -> Result<(), String> {
             spec.default_port
         } else {
             crate::netdiag::find_free_port(spec.default_port.saturating_add(1), 50).ok_or_else(
-                || format!("默认端口 {} 起连续 50 个端口都被占用，找不到空闲端口", spec.default_port),
+                || {
+                    format!(
+                        "默认端口 {} 起连续 50 个端口都被占用，找不到空闲端口",
+                        spec.default_port
+                    )
+                },
             )?
         };
         spec = resolve_spec_port(&spec, chosen);
@@ -293,7 +298,11 @@ fn command_stop(state: &Arc<AppState>, id: &str, timeout_secs: u64) {
         let grace = timeout_secs.max(1);
         // 把宽限期写进服务自己的日志：mac/linux 上「停止没等够就死了/根本没等」这类
         // 反馈，靠这行和下面的耗时行就能判，不用用户自证
-        log_sys(state, id, &format!("[panel] 优雅停止：请求进程退出，最多等待 {grace} 秒"));
+        log_sys(
+            state,
+            id,
+            &format!("[panel] 优雅停止：请求进程退出，最多等待 {grace} 秒"),
+        );
         let t0 = Instant::now();
         let deadline = t0 + Duration::from_secs(grace);
 
@@ -532,10 +541,9 @@ pub fn reap_children_on_exit(state: &Arc<AppState>) {
 
     let deadline = Instant::now() + Duration::from_millis(1500);
     loop {
-        let pending = procs.iter_mut().any(|l| match l.child.try_wait() {
-            Ok(Some(_)) => false,
-            _ => true,
-        });
+        let pending = procs
+            .iter_mut()
+            .any(|l| !matches!(l.child.try_wait(), Ok(Some(_))));
         if !pending || Instant::now() >= deadline {
             break;
         }
@@ -643,4 +651,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
-

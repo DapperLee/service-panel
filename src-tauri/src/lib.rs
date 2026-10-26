@@ -237,7 +237,9 @@ pub fn run() {
                 // 恢复上次设置的并发数
                 if let Some(v) = db::get_setting(&conn, "task_max_parallel") {
                     if let Ok(n) = v.parse::<usize>() {
-                        state.task_max_parallel.store(n.clamp(1, 16), std::sync::atomic::Ordering::SeqCst);
+                        state
+                            .task_max_parallel
+                            .store(n.clamp(1, 16), std::sync::atomic::Ordering::SeqCst);
                     }
                 }
             }
@@ -247,14 +249,15 @@ pub fn run() {
             {
                 let handle = app_handle.clone();
                 use tauri_plugin_notification::NotificationExt;
-                let notify: Arc<dyn Fn(String, String) + Send + Sync> = Arc::new(move |title, body| {
-                    let _ = handle
-                        .notification()
-                        .builder()
-                        .title(title)
-                        .body(body)
-                        .show();
-                });
+                let notify: Arc<dyn Fn(String, String) + Send + Sync> =
+                    Arc::new(move |title, body| {
+                        let _ = handle
+                            .notification()
+                            .builder()
+                            .title(title)
+                            .body(body)
+                            .show();
+                    });
                 *state.notify.lock().unwrap() = Some(notify);
             }
 

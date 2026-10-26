@@ -21,9 +21,7 @@ mod imp {
         let mut cmd = Command::new("sc");
         cmd.args(args);
         crate::drivers::command::hide_window(&mut cmd);
-        let out = cmd
-            .output()
-            .map_err(|e| format!("调用 sc 失败: {e}"))?;
+        let out = cmd.output().map_err(|e| format!("调用 sc 失败: {e}"))?;
         // sc 在中文 Windows 上输出 OEM(936/GBK)
         let stdout = crate::logs::decode_text(&out.stdout, "gbk");
         let stderr = crate::logs::decode_text(&out.stderr, "gbk");
@@ -38,7 +36,8 @@ mod imp {
         match run(&["start", service_name]) {
             Ok(_) => Ok(()),
             Err(e) => {
-                if e.contains("1056") || e.contains("already running") || e.contains("正在运行") {
+                if e.contains("1056") || e.contains("already running") || e.contains("正在运行")
+                {
                     Ok(())
                 } else {
                     Err(e)
@@ -128,7 +127,11 @@ mod imp {
 
         #[link(name = "advapi32")]
         extern "system" {
-            fn OpenSCManagerW(machine: *const u16, database: *const u16, access: u32) -> *mut c_void;
+            fn OpenSCManagerW(
+                machine: *const u16,
+                database: *const u16,
+                access: u32,
+            ) -> *mut c_void;
             fn OpenServiceW(scm: *mut c_void, name: *const u16, access: u32) -> *mut c_void;
             fn QueryServiceStatusEx(
                 service: *mut c_void,
@@ -342,9 +345,7 @@ mod imp {
             if user_scope {
                 cmd.arg("--user");
             }
-            cmd.args(["is-active", service_name])
-                .output()
-                .ok()?
+            cmd.args(["is-active", service_name]).output().ok()?
         };
         match String::from_utf8_lossy(&out.stdout).trim() {
             "active" => Some(true),
@@ -368,7 +369,11 @@ mod imp {
 
     /// 单元的主进程号。未运行或查不到时 systemd 返回 0，一律折算成 None。
     fn main_pid(user_scope: bool, service_name: &str) -> Option<u32> {
-        let out = run_at(user_scope, &["show", "-p", "MainPID", "--value", service_name]).ok()?;
+        let out = run_at(
+            user_scope,
+            &["show", "-p", "MainPID", "--value", service_name],
+        )
+        .ok()?;
         let pid: u32 = out.trim().parse().ok()?;
         (pid > 0).then_some(pid)
     }
