@@ -36,6 +36,8 @@ pub fn list_services(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<Servi
                 last_error: rt.and_then(|r| r.last_error.clone()),
                 config_ok: rt.map(|r| r.config_ok).unwrap_or(true),
                 chosen_port: rt.and_then(|r| r.chosen_port),
+                crash_count: rt.map(|r| r.crash_count).unwrap_or(0),
+                last_crash: rt.and_then(|r| r.last_crash.clone()),
             }
         })
         .collect();
@@ -122,7 +124,7 @@ pub async fn start_service(
     id: String,
 ) -> Result<(), String> {
     let st = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || manager::start(&st, &id))
+    tauri::async_runtime::spawn_blocking(move || manager::start_user(&st, &id))
         .await
         .map_err(|e| format!("任务调度失败: {e}"))?
 }
@@ -450,6 +452,53 @@ pub fn set_task_max_parallel(
     Ok(())
 }
 
+/// 解析落盘日志文本（格式 "{ts} [stream] text"）为 LogLine 列表。
+fn parse_log_content(content: &str) -> Vec<crate::types::LogLine> {
+    let mut out = Vec::new();
+    for line in content.lines() {
+        let sp = match line.find(' ') {
+            Some(i) => i,
+            None => continue,
+        };
+        let ts: i64 = line[..sp].parse().unwrap_or(0);
+        let rest = &line[sp + 1..];
+        // 落盘行可能因进程被强杀而中途截断，切片一律用 get 防越界 panic
+        let (stream, text) = match (rest.strip_prefix('['), rest.find(']')) {
+            (Some(_), Some(end)) if end >= 1 => {
+                let stream = rest.get(1..end).unwrap_or("stdout");
+                let text = rest.get(end + 2..).unwrap_or("").to_string();
+                (stream, text)
+            }
+            _ => ("stdout", rest.to_string()),
+        };
+        out.push(crate::types::LogLine {
+            ts,
+            stream: stream.to_string(),
+            text,
+        });
+    }
+    out
+}
+
+/// 读取某日志目录下最新的 .log 文件并解析。
+fn read_log_dir(dir: &std::path::Path) -> Result<Vec<crate::types::LogLine>, String> {
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .map_err(|e| format!("读日志目录失败: {e}"))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .map(|n| n.contains(".log"))
+                .unwrap_or(false)
+        })
+        .collect();
+    files.sort();
+    let latest = files.last().ok_or("无日志文件".to_string())?;
+    let content = std::fs::read_to_string(latest).map_err(|e| e.to_string())?;
+    Ok(parse_log_content(&content))
+}
+
 /// 读取某次运行的日志文件内容（回看历史运行；本次会话实时跑过的走内存流即可）
 #[tauri::command]
 pub fn read_task_log(
@@ -466,48 +515,17 @@ pub fn read_task_log(
         .map_err(|_| "运行记录不存在".to_string())?
     };
     let dir = dir.ok_or("该运行没有日志文件".to_string())?;
-    let dir = std::path::Path::new(&dir);
-    // 取该运行目录下最新的 .log 文件
-    let mut files: Vec<_> = std::fs::read_dir(dir)
-        .map_err(|e| format!("读日志目录失败: {e}"))?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|s| s.to_str())
-                .map(|n| n.contains(".log"))
-                .unwrap_or(false)
-        })
-        .collect();
-    files.sort();
-    let latest = files.last().ok_or("无日志文件".to_string())?;
-    let content = std::fs::read_to_string(latest).map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for line in content.lines() {
-        // 落盘格式： "{ts} [{stream}] {text}"
-        let sp = match line.find(' ') {
-            Some(i) => i,
-            None => continue,
-        };
-        let ts: i64 = line[..sp].parse().unwrap_or(0);
-        let rest = &line[sp + 1..];
-        // 落盘行可能因进程被强杀而在中途截断，切片一律用 get 防越界 panic
-        let (stream, text) = match (rest.strip_prefix('['), rest.find(']')) {
-            (Some(_), Some(end)) if end >= 1 => {
-                let stream = rest.get(1..end).unwrap_or("stdout");
-                // "]" 之后应有一个空格再接正文
-                let text = rest.get(end + 2..).unwrap_or("").to_string();
-                (stream, text)
-            }
-            _ => ("stdout", rest.to_string()),
-        };
-        out.push(crate::types::LogLine {
-            ts,
-            stream: stream.to_string(),
-            text,
-        });
-    }
-    Ok(out)
+    read_log_dir(std::path::Path::new(&dir))
+}
+
+/// 读取某服务最近的日志文件（面板重启/未在看时崩溃，也能把历史日志读回右侧）
+#[tauri::command]
+pub fn read_service_log(
+    state: tauri::State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<Vec<crate::types::LogLine>, String> {
+    let dir = state.log_dir(&id);
+    read_log_dir(&dir)
 }
 
 #[tauri::command]

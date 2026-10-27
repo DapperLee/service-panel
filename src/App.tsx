@@ -139,6 +139,27 @@ export default function App() {
     };
   }, []);
 
+  // 选中一个非运行中的服务、且内存里没有它的日志时，从磁盘读回（面板重启/未在看时崩溃也能看到日志）
+  useEffect(() => {
+    if (!selectedId) return;
+    const svc = services.find((s) => s.id === selectedId);
+    if (svc && (svc.state === "running" || svc.state === "starting")) return; // 运行中靠实时流
+    let cancelled = false;
+    api
+      .readServiceLog(selectedId)
+      .then((lines) => {
+        if (cancelled || lines.length === 0) return;
+        setLogs((prev) =>
+          prev[selectedId] && prev[selectedId].length > 0 ? prev : { ...prev, [selectedId]: lines }
+        );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, services]);
+
   const selected = services.find((s) => s.id === selectedId) ?? null;
   const runningCount = services.filter((s) => s.state === "running").length;
 

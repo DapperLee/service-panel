@@ -57,6 +57,12 @@ export interface ServiceSpec {
   after: string[];
 }
 
+export interface CrashInfo {
+  ts: number;
+  reason: string;
+  exitCode: number | null;
+}
+
 export interface ServiceView {
   id: string;
   name: string;
@@ -73,6 +79,8 @@ export interface ServiceView {
   lastError: string | null;
   configOk: boolean;
   chosenPort: number | null;
+  crashCount: number;
+  lastCrash: CrashInfo | null;
 }
 
 export interface ServiceInput {

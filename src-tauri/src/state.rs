@@ -87,6 +87,10 @@ pub struct Runtime {
     pub config_ok: bool,
     /// 进入 Running 的时间戳（毫秒），用于"稳定运行一段时间后清零重试计数"
     pub running_since: i64,
+    /// 自上次手动启动以来观察到的崩溃次数
+    pub crash_count: u32,
+    /// 最近一次崩溃痕迹（重启回 Running 后仍保留，手动启动才清）
+    pub last_crash: Option<crate::types::CrashInfo>,
 }
 
 impl Runtime {
@@ -114,6 +118,8 @@ impl Runtime {
             ext_metrics: None,
             config_ok: true,
             running_since: 0,
+            crash_count: 0,
+            last_crash: None,
         }
     }
 

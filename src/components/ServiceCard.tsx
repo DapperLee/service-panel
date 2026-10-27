@@ -18,6 +18,13 @@ const DRIVER_LABEL: Record<string, string> = {
   docker: "Docker",
 };
 
+function timeAgo(tsSec: number): string {
+  const d = Math.max(0, Math.floor(Date.now() / 1000) - tsSec);
+  if (d < 60) return `${d}秒前`;
+  if (d < 3600) return `${Math.floor(d / 60)}分钟前`;
+  return `${Math.floor(d / 3600)}小时前`;
+}
+
 interface Props {
   svc: ServiceView;
   selected: boolean;
@@ -79,6 +86,14 @@ export default function ServiceCard({
           </>
         )}
       </div>
+
+      {svc.crashCount > 0 && (
+        <div className="crash-badge" title="异常退出后自动重启过；点「启动」可清除该提示">
+          ⚠ 崩溃 {svc.crashCount} 次
+          {svc.lastCrash ? ` · ${svc.lastCrash.reason}` : ""}
+          {svc.lastCrash ? ` · ${timeAgo(svc.lastCrash.ts)}` : ""}
+        </div>
+      )}
 
       {svc.lastError && <div className="err">{svc.lastError}</div>}
 

@@ -64,6 +64,7 @@ const realApi = {
   cancelTaskRun: (runId: string) => invoke<void>("cancel_task_run", { runId }),
   listTaskRuns: (limit: number) => invoke<TaskRun[]>("list_task_runs", { limit }),
   readTaskLog: (runId: string) => invoke<LogLine[]>("read_task_log", { runId }),
+  readServiceLog: (id: string) => invoke<LogLine[]>("read_service_log", { id }),
   getTaskMaxParallel: () => invoke<number>("get_task_max_parallel"),
   setTaskMaxParallel: (n: number) => invoke<void>("set_task_max_parallel", { n }),
   openInExplorer: (path: string) => invoke<void>("open_in_explorer", { path }),

@@ -226,6 +226,18 @@ fn tick(state: &Arc<AppState>, sys: &System) {
                     if rt.desired == Desired::Running {
                         rt.state = State::Crashed;
                         rt.last_error = Some(format!("进程意外退出 code={code}"));
+                        record_crash(rt, now, format!("进程意外退出 code={code}"), Some(code));
+                        // 把崩溃原因写进服务日志流/文件，否则进程自身没输出时右侧看不到任何线索
+                        if let (Some(emitter), Some(sink)) =
+                            (state.current_emitter(), rt.sink.clone())
+                        {
+                            crate::logs::system_message(
+                                &format!("[panel] 进程意外退出 code={code}"),
+                                id,
+                                &emitter,
+                                &sink,
+                            );
+                        }
                         events.push(StateEvent {
                             id: id.clone(),
                             from: Some(prev),
@@ -343,6 +355,7 @@ fn tick(state: &Arc<AppState>, sys: &System) {
                 rt.state = State::Crashed;
                 rt.ext_pid = None;
                 rt.ext_metrics = None;
+                record_crash(rt, now, "外部服务未在运行".to_string(), None);
                 events.push(StateEvent {
                     id: id.clone(),
                     from: Some(prev),
@@ -457,6 +470,22 @@ fn tick(state: &Arc<AppState>, sys: &System) {
             }
         }
     }
+}
+
+/// 记录一次崩溃痕迹：累加次数、记下最近原因/退出码/时间。
+/// 重启回 Running 后仍保留，只有用户手动启动才清（见 manager::start_user）。
+fn record_crash(
+    rt: &mut crate::state::Runtime,
+    now_ms: i64,
+    reason: String,
+    exit_code: Option<i32>,
+) {
+    rt.crash_count = rt.crash_count.saturating_add(1);
+    rt.last_crash = Some(crate::types::CrashInfo {
+        ts: now_ms / 1000,
+        reason,
+        exit_code,
+    });
 }
 
 /// 依据重启策略决定是否/何时再拉起，设置 next_attempt_at（指数退避）

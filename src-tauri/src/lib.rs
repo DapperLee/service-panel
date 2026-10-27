@@ -317,6 +317,7 @@ pub fn run() {
             commands::get_task_max_parallel,
             commands::set_task_max_parallel,
             commands::read_task_log,
+            commands::read_service_log,
             commands::open_in_explorer,
             commands::open_in_terminal,
             commands::list_bookmarks,

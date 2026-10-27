@@ -194,6 +194,17 @@ textarea:focus {
   color: var(--red);
   font-size: 12px;
 }
+.crash-badge {
+  background: rgba(241, 196, 15, 0.14);
+  border: 1px solid var(--yellow);
+  color: #f5d76e;
+  font-size: 12px;
+  border-radius: 6px;
+  padding: 4px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* 日志侧栏 */
 .logs {

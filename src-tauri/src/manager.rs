@@ -152,6 +152,19 @@ pub fn start(state: &Arc<AppState>, id: &str) -> Result<(), String> {
     start_impl(state, id)
 }
 
+/// 用户手动启动：先清掉崩溃痕迹（视为已知晓），再启动。
+/// 监督线程的自动重启走 start()，保留崩溃痕迹。
+pub fn start_user(state: &Arc<AppState>, id: &str) -> Result<(), String> {
+    {
+        let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(rt) = rts.get_mut(id) {
+            rt.crash_count = 0;
+            rt.last_crash = None;
+        }
+    }
+    start(state, id)
+}
+
 pub fn stop(state: &Arc<AppState>, id: &str) -> Result<(), String> {
     let _g = try_lock_op(state, id).ok_or("该服务正在执行其它操作，请稍候")?;
     stop_impl(state, id)
@@ -480,6 +493,14 @@ fn stop_impl(state: &Arc<AppState>, id: &str) -> Result<(), String> {
 
 pub fn restart(state: &Arc<AppState>, id: &str) -> Result<(), String> {
     let _g = try_lock_op(state, id).ok_or("该服务正在执行其它操作，请稍候")?;
+    // 用户手动重启：清掉崩溃痕迹
+    {
+        let mut rts = state.runtimes.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(rt) = rts.get_mut(id) {
+            rt.crash_count = 0;
+            rt.last_crash = None;
+        }
+    }
     let was_running = state
         .runtimes
         .lock()

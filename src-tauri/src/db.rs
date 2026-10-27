@@ -212,6 +212,8 @@ fn row_to_view(
         },
         config_ok,
         chosen_port: None,
+        crash_count: 0,
+        last_crash: None,
     }
 }
 

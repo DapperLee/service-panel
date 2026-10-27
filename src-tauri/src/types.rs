@@ -215,6 +215,15 @@ pub enum Desired {
     Stopped,
 }
 
+/// 一次崩溃的痕迹（重启回 Running 后仍保留在卡片上，避免异常被掩盖）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrashInfo {
+    pub ts: i64,
+    pub reason: String,
+    pub exit_code: Option<i32>,
+}
+
 /// 暴露给前端的服务视图对象
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -239,6 +248,12 @@ pub struct ServiceView {
     /// 自动端口模式下本次实际选定的端口（非自动为 None）
     #[serde(default)]
     pub chosen_port: Option<u16>,
+    /// 自上次手动启动以来观察到的崩溃次数
+    #[serde(default)]
+    pub crash_count: u32,
+    /// 最近一次崩溃痕迹（重启回 Running 后仍显示，手动启动才清）
+    #[serde(default)]
+    pub last_crash: Option<CrashInfo>,
 }
 
 fn default_true() -> bool {

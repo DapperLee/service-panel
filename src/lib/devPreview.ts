@@ -26,6 +26,8 @@ function svc(
     lastError: null,
     configOk: over.configOk ?? true,
     chosenPort: null,
+    crashCount: 0,
+    lastCrash: null,
     ...over,
   };
 }
@@ -125,7 +127,7 @@ export const devApi = {
   add: async (input: any) => {
     ensure();
     const id = `s${Math.random().toString(36).slice(2, 8)}`;
-    list.push({ ...input, id, state: "stopped", desired: "stopped", pid: null, cpu: null, memMb: null, lastError: null, configOk: true, chosenPort: null });
+    list.push({ ...input, id, state: "stopped", desired: "stopped", pid: null, cpu: null, memMb: null, lastError: null, configOk: true, chosenPort: null, crashCount: 0, lastCrash: null });
     return id;
   },
   update: async (input: any) => {
@@ -233,6 +235,7 @@ export const devApi = {
   cancelTaskRun: async () => {},
   listTaskRuns: async (limit: number) => runs.slice(0, limit),
   readTaskLog: async () => [],
+  readServiceLog: async () => [],
   getTaskMaxParallel: async () => 1,
   setTaskMaxParallel: async () => {},
   openInExplorer: async () => {},
