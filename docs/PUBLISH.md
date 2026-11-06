@@ -157,9 +157,11 @@ git push gitee  main --follow-tags
 
 ---
 
-## 6. 自动化发布：GitHub Actions（tag 触发）
+## 6. 自动化发布：GitHub Actions（tag 触发，三平台）
 
-在仓库放 `.github/workflows/release.yml`：
+仓库已放 `.github/workflows/release.yml`（与下方一致）。matrix 三平台并行：
+Windows（.msi/.exe）、macOS（.dmg/.app）、Linux（.deb/.AppImage），
+每个平台先跑单元测试，红了该平台不出包；`fail-fast: false` 保证一个平台失败不连累其它平台。
 
 ```yaml
 name: Release
@@ -174,7 +176,14 @@ permissions:
 
 jobs:
   release:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+          - platform: macos-latest
+          - platform: ubuntu-latest
+    runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
 
@@ -182,12 +191,28 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.platform }}
+
+      # Tauri v2 on Linux 需要 webkit2gtk-4.1 等系统依赖
+      - name: Install Linux system deps (Tauri v2)
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
       - name: Install frontend deps
-        run: npm install
+        run: npm ci
+
+      - name: Run tests
+        run: cargo test --lib
 
       - name: Build & Release (Tauri)
         uses: tauri-apps/tauri-action@v0
@@ -196,15 +221,17 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Service Panel ${{ github.ref_name }}'
-          releaseBody: 'Windows 安装包见下方 Assets。'
+          releaseBody: '安装包见下方 Assets：Windows (.msi/.exe)、macOS (.dmg/.app)、Linux (.deb/.AppImage)。'
           releaseDraft: true
           prerelease: false
 ```
 
 之后每次 `git push github main --follow-tags` 推一个新 `v*` tag，GitHub 就会自动：
-装 Node/Rust → `tauri build`（Windows）→ 创建 Release 草稿并上传安装包。你去 Releases 点 Publish 即可。
+三平台并行装依赖 → 跑测试 → `tauri build` → 把各平台安装包传到同一个 Release 草稿。你去 Releases 点 Publish 即可。
+（Linux 构建需要 webkit2gtk-4.1 等系统依赖，workflow 里已内置安装步骤。）
 
-> 首次运行若报 Tauri 依赖缺失，按需在 workflow 里补 `cargo` 缓存或系统依赖；Windows runner 一般自带 MSVC，无需额外装。
+> 补跑旧 tag：tag 是在工作流入库**之前**推的话不会触发。删除远程 tag 再重推即可：
+> `git push <remote> :refs/tags/v0.2.0 && git push <remote> v0.2.0`（本地 tag 不用动）。
 > 代码签名（可选）：需要证书时再在 workflow 里配 `TAURI_SIGNING_*` / Windows 签名变量。
 
 ---

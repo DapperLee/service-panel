@@ -1,6 +1,6 @@
 name: Release
 
-# 推送 v* tag 时自动构建并生成 Release 草稿
+# 推送 v* tag 时自动构建三平台安装包并生成 Release 草稿
 on:
   push:
     tags:
@@ -12,7 +12,15 @@ permissions:
 
 jobs:
   release:
-    runs-on: windows-latest
+    strategy:
+      # 一个平台失败不取消其它平台的构建
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+          - platform: macos-latest
+          - platform: ubuntu-latest
+    runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
 
@@ -25,14 +33,23 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # 缓存 Rust 编译产物，第二次构建能快很多
+      # 缓存 Rust 编译产物，按平台区分；第二次构建能快很多
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.platform }}
+
+      # Tauri v2 on Linux 需要 webkit2gtk-4.1 等系统依赖
+      - name: Install Linux system deps (Tauri v2)
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
       - name: Install frontend deps
         run: npm ci
 
-      # 发布前先跑一遍单元测试，红了就不出包
+      # 发布前先跑一遍单元测试，红了该平台就不出包
       - name: Run tests
         run: cargo test --lib
 
@@ -43,15 +60,6 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Service Panel ${{ github.ref_name }}'
-          releaseBody: 'Windows 安装包见下方 Assets（.msi / .exe）。更新内容见提交记录。'
+          releaseBody: '安装包见下方 Assets：Windows (.msi/.exe)、macOS (.dmg/.app)、Linux (.deb/.AppImage)。更新内容见提交记录。'
           releaseDraft: true
           prerelease: false
-
-      # 要扩展 macOS / Linux 构建时，把上面 job 改成 matrix：
-      # strategy:
-      #   matrix:
-      #     include:
-      #       - platform: windows-latest
-      #       - platform: macos-latest
-      #       - platform: ubuntu-latest   # 需补 webkit2gtk 等系统依赖
-      # 并把 runs-on 换成 ${{ matrix.platform }}
