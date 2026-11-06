@@ -94,9 +94,19 @@ npm install --registry=https://registry.npmmirror.com
 # 2) 开发运行（首次会编译全部 Rust 依赖，5~15 分钟属正常，之后增量很快）
 npm run tauri dev
 
+# 2) 开发运行（首次会编译全部 Rust 依赖，5~15 分钟属正常，之后增量很快）
+npm run tauri dev
+
+# 2b) dev 端口(5273)被其它服务占用？换个端口启动
+npm run tauri:dev -- 6000
+
 # 3) 打包安装包（产物在 src-tauri/target/release/bundle/）
 npm run tauri build
 ```
+
+> 说明：**打包版（tauri build 的安装包）不监听任何端口**，前端内嵌进 exe；端口冲突只存在于
+> dev 模式（要起 vite 开发服务器）。`tauri:dev` 脚本还会按端口区分 identifier，
+> 不同端口的实例各有独立数据目录，互不干扰。
 
 **同时跑测试实例（不和正式实例抢端口/数据）**：正式实例默认占 vite 端口 5273。
 想另开一个测试实例，用：

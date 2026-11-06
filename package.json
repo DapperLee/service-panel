@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "tauri:dev": "node scripts/dev-with-port.mjs",
     "tauri:dev:test": "cross-env TAURI_DEV_PORT=5274 tauri dev --config src-tauri/tauri.test.conf.json"
   },
   "dependencies": {
