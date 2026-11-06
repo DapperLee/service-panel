@@ -50,8 +50,10 @@ jobs:
         run: npm ci
 
       # 发布前先跑一遍单元测试，红了该平台就不出包
+      # Cargo.toml 在 src-tauri/ 子目录，必须指定 working-directory
       - name: Run tests
         run: cargo test --lib
+        working-directory: src-tauri
 
       - name: Build & Release (Tauri)
         uses: tauri-apps/tauri-action@v0
