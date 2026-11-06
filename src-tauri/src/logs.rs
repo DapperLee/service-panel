@@ -205,7 +205,54 @@ pub fn emit_line(emitter: &LogEmitter, sink: &Sink, service_id: &str, stream: &s
     emit_and_persist(text, stream, service_id, emitter, sink);
 }
 
+/// 去掉 ANSI 终端转义序列（颜色/光标控制等）。
+/// 子进程被面板以管道方式拉起时检测不到真终端，但部分工具（vite/构建器/测试框架）
+/// 仍会输出颜色码；网页版日志控制台不认识这些指令，会把 `ESC[32m` 显示成 `[32m` 乱文本。
+/// 统一在日志管线入口剥掉，UI 与落盘文件都保持干净（文件里有转义码还会污染 grep）。
+fn strip_ansi(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b {
+            // ESC：按转义序列类型跳过
+            if i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+                // CSI：ESC [ 参数... 终止字节(0x40-0x7e)
+                let mut j = i + 2;
+                while j < bytes.len() && !(0x40..=0x7e).contains(&bytes[j]) {
+                    j += 1;
+                }
+                i = if j < bytes.len() { j + 1 } else { bytes.len() };
+                // 序列不完整（到尾都没终止符）则丢弃剩余
+            } else if i + 1 < bytes.len() && bytes[i + 1] == b']' {
+                // OSC：到 BEL(0x07) 或下一个 ESC 结束
+                let mut j = i + 2;
+                while j < bytes.len() && bytes[j] != 0x07 && bytes[j] != 0x1b {
+                    j += 1;
+                }
+                i = if j < bytes.len() && bytes[j] == 0x07 {
+                    j + 1
+                } else {
+                    j
+                };
+            } else {
+                i += 2; // ESC + 单字符（如 ESC ( B）
+            }
+            continue;
+        }
+        // 按完整 UTF-8 字符拷贝，避免把多字节字符从中间切坏
+        let start = i;
+        i += 1;
+        while i < bytes.len() && (bytes[i] & 0xC0) == 0x80 {
+            i += 1;
+        }
+        out.push_str(std::str::from_utf8(&bytes[start..i]).unwrap_or(""));
+    }
+    out
+}
+
 fn emit_and_persist(text: &str, stream: &str, service_id: &str, emitter: &LogEmitter, sink: &Sink) {
+    let text = strip_ansi(text);
     let line = LogLine {
         ts: now_millis(),
         stream: stream.to_string(),
@@ -310,9 +357,27 @@ impl LogQueue {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode, LogEvent, LogQueue, LogSink};
+    use super::{decode, strip_ansi, LogEvent, LogQueue, LogSink};
     use crate::types::LogLine;
     use std::path::PathBuf;
+
+    #[test]
+    fn strip_ansi_removes_color_codes_but_keeps_text() {
+        // vite 的实际输出形态（ESC[32m 等）
+        let raw = "\u{1b}[32m\u{1b}[1mVITE\u{1b}[22m v5.4.21\u{1b}[39m  ready in 256 ms";
+        assert_eq!(strip_ansi(raw), "VITE v5.4.21  ready in 256 ms");
+    }
+
+    #[test]
+    fn strip_ansi_keeps_plain_text_and_utf8() {
+        assert_eq!(strip_ansi("普通中文日志 abc 123"), "普通中文日志 abc 123");
+    }
+
+    #[test]
+    fn strip_ansi_handles_truncated_sequence() {
+        // 行尾截断的不完整序列：丢弃但不 panic
+        assert_eq!(strip_ansi("ok \u{1b}[32"), "ok ");
+    }
 
     fn line(svc: &str, text: &str) -> LogEvent {
         LogEvent {
