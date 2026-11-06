@@ -311,6 +311,15 @@ export default function TasksView({ services, logs, onClearLog, onInjectLog }: P
                   {r.extraArgs ? ` ${r.extraArgs}` : ""}
                 </span>
                 <span className="run-actions" onClick={(e) => e.stopPropagation()}>
+                  {r.status === "running" && (
+                    <button
+                      className="ghost danger"
+                      title="停止该运行（连子进程一起回收）"
+                      onClick={() => cancel(r.id)}
+                    >
+                      停止
+                    </button>
+                  )}
                   <button
                     className="ghost"
                     title="只看该任务的历史"
