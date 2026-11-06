@@ -18,12 +18,29 @@ import path from "node:path";
 const BASE_ID = "com.local.servicepanel";
 const DEFAULT_PORT = 5273;
 
+// Chromium/WebView2 拒绝加载的"不安全端口"（会报 ERR_UNSAFE_PORT，与服务器是否监听无关）
+const UNSAFE_PORTS = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
+  87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135,
+  137, 139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531,
+  532, 540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720,
+  1723, 2049, 3659, 4045, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668,
+  6669, 6697, 10080,
+]);
+
 const args = process.argv.slice(2);
 const dry = args.includes("--dry-run");
 const portArg = args.find((a) => /^\d+$/.test(a));
 const port = Number(portArg) || DEFAULT_PORT;
 if (port < 1024 || port > 65535) {
   console.error(`端口 ${port} 不在 1024-65535 范围内`);
+  process.exit(1);
+}
+if (UNSAFE_PORTS.has(port)) {
+  console.error(
+    `端口 ${port} 是浏览器保留的不安全端口（WebView2 拒绝加载，报 ERR_UNSAFE_PORT）。` +
+      `\n请换一个，例如：5274 / 8123 / 18080 / 25273`
+  );
   process.exit(1);
 }
 
