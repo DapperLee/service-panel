@@ -128,7 +128,7 @@ export default function TaskDialog({ editing, services, onClose, onSaved }: Prop
           <input value={config.command} onChange={(e) => patch({ command: e.target.value })} placeholder="npx / cargo / dotnet" />
         </div>
         <div className="field">
-          <label>默认参数（空格分隔；选了变体时用变体参数）</label>
+          <label>默认参数（空格分隔；选中变体时会被变体参数【整体替换】，不含默认参数）</label>
           <input value={argsText} onChange={(e) => setArgsText(e.target.value)} placeholder="tauri android build" />
         </div>
         <div className="field">
@@ -172,7 +172,7 @@ export default function TaskDialog({ editing, services, onClose, onSaved }: Prop
         {config.variants.map((v, i) => (
           <div className="row" key={i} style={{ alignItems: "center" }}>
             <input style={{ flex: "0 0 30%" }} value={v.label} onChange={(e) => setVariant(i, { label: e.target.value })} placeholder="名称" />
-            <input value={v.args.join(" ")} onChange={(e) => setVariant(i, { args: e.target.value.trim() ? e.target.value.trim().split(/\s+/) : [] })} placeholder="该变体的参数" />
+            <input value={v.args.join(" ")} onChange={(e) => setVariant(i, { args: e.target.value.trim() ? e.target.value.trim().split(/\s+/) : [] })} placeholder="该变体的完整参数（整体替换默认参数），如：run dev" />
             <button className="ghost danger" style={{ flex: "0 0 auto" }} onClick={() => delVariant(i)}>删</button>
           </div>
         ))}
