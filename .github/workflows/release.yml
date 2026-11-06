@@ -1,0 +1,57 @@
+name: Release
+
+# 推送 v* tag 时自动构建并生成 Release 草稿
+on:
+  push:
+    tags:
+      - 'v*'
+
+# 创建 Release 需要写权限
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # 缓存 Rust 编译产物，第二次构建能快很多
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install frontend deps
+        run: npm ci
+
+      # 发布前先跑一遍单元测试，红了就不出包
+      - name: Run tests
+        run: cargo test --lib
+
+      - name: Build & Release (Tauri)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Service Panel ${{ github.ref_name }}'
+          releaseBody: 'Windows 安装包见下方 Assets（.msi / .exe）。更新内容见提交记录。'
+          releaseDraft: true
+          prerelease: false
+
+      # 要扩展 macOS / Linux 构建时，把上面 job 改成 matrix：
+      # strategy:
+      #   matrix:
+      #     include:
+      #       - platform: windows-latest
+      #       - platform: macos-latest
+      #       - platform: ubuntu-latest   # 需补 webkit2gtk 等系统依赖
+      # 并把 runs-on 换成 ${{ matrix.platform }}
